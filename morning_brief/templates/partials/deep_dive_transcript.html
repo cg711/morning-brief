@@ -1,0 +1,14 @@
+<details class="transcript">
+  <summary>Transcript &amp; sources</summary>
+  <p>{{ ep.intro }}</p>
+  {% for sec in ep.sections %}
+    <h3>{{ sec.heading }}</h3>
+    <p>{{ sec.text }}</p>
+    {% if sec.sources %}
+      <p class="sources">
+        {% for s in sec.sources %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}{% if s.publisher %} — {{ s.publisher }}{% endif %}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+      </p>
+    {% endif %}
+  {% endfor %}
+  <p>{{ ep.outro }}</p>
+</details>

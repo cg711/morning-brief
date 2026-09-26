@@ -1,0 +1,11 @@
+<article class="card" id="ep-{{ ep.date }}">
+  <div class="row-head">
+    <h3>{{ ep.title }}</h3>
+    <span class="meta">{{ ep.duration }}</span>
+  </div>
+  <audio controls preload="none" src="{{ ep.audio_url }}"></audio>
+  {% include "partials/transcript.html" %}
+  <div class="actions">
+    <button class="danger" hx-delete="/episodes/{{ ep.date }}" hx-target="#ep-{{ ep.date }}" hx-swap="outerHTML" hx-confirm="Delete the {{ ep.title }} episode?">Delete</button>
+  </div>
+</article>

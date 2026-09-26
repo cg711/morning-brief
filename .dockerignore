@@ -1,0 +1,10 @@
+.venv
+.git
+data
+docs
+spike
+tests
+scripts
+.env
+.env.dev
+.claude

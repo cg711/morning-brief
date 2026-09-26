@@ -1,0 +1,35 @@
+# segment -> list of feeds. fetch_pages: fetch the article page when the feed has only a summary.
+# NPR article pages return 402 to automated clients and MarketWatch is paywalled: never fetch them.
+segments:
+  headlines:
+    - name: NPR News
+      url: https://feeds.npr.org/1001/rss.xml
+    - name: NPR World
+      url: https://feeds.npr.org/1004/rss.xml
+    - name: BBC News
+      url: https://feeds.bbci.co.uk/news/world/rss.xml
+      fetch_pages: true
+    - name: PBS NewsHour
+      url: https://www.pbs.org/newshour/feeds/rss/headlines
+      fetch_pages: true
+  tech:
+    - name: Ars Technica
+      url: https://feeds.arstechnica.com/arstechnica/index
+      fetch_pages: true
+    - name: Science News
+      url: https://www.sciencenews.org/feed
+      fetch_pages: true
+    - name: NPR Technology
+      url: https://feeds.npr.org/1019/rss.xml
+  business:
+    - name: NPR Business
+      url: https://feeds.npr.org/1006/rss.xml
+    - name: MarketWatch
+      url: https://feeds.content.dowjones.io/public/rss/mw_topstories
+  local:
+    - name: MPR News
+      url: https://www.mprnews.org/feed/homepage
+    - name: Minnesota Reformer
+      url: https://minnesotareformer.com/feed/
+    - name: Sahan Journal
+      url: https://sahanjournal.com/feed/

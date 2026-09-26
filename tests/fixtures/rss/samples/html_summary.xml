@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Example Tech</title><link>https://tech.example.net</link><description>Sample feed with HTML in summaries</description>
+<item><title>New chip promises longer battery life &amp; faster charging</title><link>https://tech.example.net/chip?utm_source=rss&amp;utm_medium=feed</link>
+<pubDate>Fri, 25 Sep 2026 16:20:00 -0500</pubDate>
+<description><![CDATA[<p>The company says the part <em>cuts power draw</em> by a third.</p><img src="https://tech.example.net/img.jpg"/>]]></description></item>
+</channel></rss>

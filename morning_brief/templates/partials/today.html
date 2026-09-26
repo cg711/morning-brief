@@ -1,0 +1,31 @@
+<section id="today" class="card today"
+  {% if today.state == "generating" %}hx-get="/partials/today" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  <div class="card-head">
+    <span class="badge">Today</span>
+    <h2>{{ today.title }}</h2>
+  </div>
+  {% if today.state == "ready" %}
+    {% set ep = today.episode %}
+    <audio controls preload="none" src="{{ ep.audio_url }}"></audio>
+    <p class="meta">{{ ep.duration }} · {{ ep.segments|length }} stories</p>
+    {% if today.error %}<p class="warn small">The last regenerate failed: {{ today.error }}</p>{% endif %}
+    {% include "partials/transcript.html" %}
+    <div class="actions">
+      <button hx-post="/generate" hx-target="#today" hx-swap="outerHTML" hx-confirm="Replace today's episode with a fresh one?">Regenerate</button>
+      <button class="danger" hx-delete="/episodes/{{ ep.date }}" hx-target="#today" hx-swap="outerHTML" hx-confirm="Delete today's episode?">Delete</button>
+    </div>
+  {% elif today.state == "generating" %}
+    <p class="status"><span class="spinner" aria-hidden="true"></span> Generating: {{ today.stage }}…</p>
+  {% elif today.state == "failed" %}
+    <p class="warn">Generation failed: {{ today.error }}</p>
+    {% if today.feed_errors %}
+      <ul class="muted small">{% for e in today.feed_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    {% endif %}
+    <div class="actions"><button hx-post="/generate" hx-target="#today" hx-swap="outerHTML">Retry</button></div>
+  {% elif today.state == "off" %}
+    <p class="muted">Daily brief is off (DAILY_BRIEF=0).</p>
+  {% else %}
+    <p class="muted">Generates at {{ today.run_at }}.</p>
+    <div class="actions"><button hx-post="/generate" hx-target="#today" hx-swap="outerHTML">Generate now</button></div>
+  {% endif %}
+</section>

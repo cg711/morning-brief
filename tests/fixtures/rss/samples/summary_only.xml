@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Example Wire</title><link>https://wire.example.org</link><description>Sample summary-only feed</description>
+<item><title>Storm system moves up the coast</title><link>https://wire.example.org/storm</link>
+<pubDate>Fri, 25 Sep 2026 12:00:00 GMT</pubDate><description>Forecasters expect heavy rain through the weekend.</description></item>
+<item><title>Markets close mixed after rate decision</title><link>https://wire.example.org/markets</link>
+<pubDate>Fri, 25 Sep 2026 21:10:00 GMT</pubDate><description>Stocks ended the day little changed.</description></item>
+<item><title>Researchers map a new deep-sea species</title><link>https://wire.example.org/species</link>
+<pubDate>Thu, 24 Sep 2026 09:45:00 GMT</pubDate><description>The find came from a remotely operated vehicle survey.</description></item>
+</channel></rss>

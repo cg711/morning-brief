@@ -1,0 +1,20 @@
+services:
+  morning-brief:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${BRIEF_TZ:-America/Chicago}
+      BRIEF_TZ: ${BRIEF_TZ:-America/Chicago}
+      DATA_DIR: /srv/data
+    ports:
+      - "${TAILSCALE_IP:?Set TAILSCALE_IP in .env (e.g. tailscale ip -4)}:8430:8000"
+      - "127.0.0.1:8430:8000"
+    volumes:
+      - ./data:/srv/data
+    mem_limit: 3g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

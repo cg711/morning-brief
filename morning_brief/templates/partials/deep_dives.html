@@ -1,0 +1,81 @@
+<section id="deep-dives" class="deep"
+  {% if dd.polling %}hx-get="/partials/deep-dives?sig={{ dd.sig }}" hx-trigger="every 10s" hx-swap="outerHTML"{% endif %}>
+  <h2>Deep dives</h2>
+
+  <form class="card add-topic" hx-post="/deep-dives" hx-target="#deep-dives" hx-swap="outerHTML">
+    <label for="dd-topic">Topic</label>
+    <input id="dd-topic" name="topic" required maxlength="200" placeholder="How the Federal Reserve came to be">
+    <label for="dd-notes">Angle or notes (optional)</label>
+    <textarea id="dd-notes" name="notes" maxlength="500" rows="2" placeholder="Focus on the 2008 crisis"></textarea>
+    {% if dd.error %}<p class="warn small">{{ dd.error }}</p>{% endif %}
+    <div class="actions"><button type="submit">Add to queue</button></div>
+  </form>
+
+  {% for ep in dd.ready %}
+    <article class="card deep-ready">
+      <div class="card-head"><span class="badge">Ready</span><h3>{{ ep.title }}</h3></div>
+      <audio controls preload="none" src="{{ ep.audio_url }}"></audio>
+      <p class="meta">{{ ep.duration }} · {{ ep.topic }}</p>
+      {% include "partials/deep_dive_transcript.html" %}
+      <div class="actions">
+        <button hx-post="/deep-dives/{{ ep.id }}/heard" hx-target="#deep-dives" hx-swap="outerHTML">Mark heard</button>
+        <button class="danger" hx-delete="/deep-dives/{{ ep.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this deep dive?">Delete</button>
+      </div>
+    </article>
+  {% endfor %}
+
+  {% for t in dd.in_progress %}
+    <div class="card">
+      <p class="status"><span class="spinner" aria-hidden="true"></span>
+        {% if t.status == "researching" %}Researching on your Mac{% else %}Speaking on the server{% endif %}
+        · {{ t.topic }} · {{ t.minutes }} min</p>
+    </div>
+  {% endfor %}
+
+  {% if dd.queued %}
+    <h3 class="sub">Queue</h3>
+    <ol class="queue">
+      {% for t in dd.queued %}
+        <li class="card">
+          <div><strong>{{ t.topic }}</strong>{% if t.notes %}<p class="muted small">{{ t.notes }}</p>{% endif %}</div>
+          <div class="actions">
+            {% if not loop.first %}<button hx-post="/deep-dives/{{ t.id }}/top" hx-target="#deep-dives" hx-swap="outerHTML">Move to top</button>{% endif %}
+            <button class="danger" hx-delete="/deep-dives/{{ t.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Remove this topic?">Delete</button>
+          </div>
+        </li>
+      {% endfor %}
+    </ol>
+  {% endif %}
+
+  {% for t in dd.failed %}
+    <div class="card">
+      <p><strong>{{ t.topic }}</strong></p>
+      <p class="warn small">Failed: {{ t.error }}</p>
+      <div class="actions">
+        <button hx-post="/deep-dives/{{ t.id }}/retry" hx-target="#deep-dives" hx-swap="outerHTML">Retry</button>
+        <button class="danger" hx-delete="/deep-dives/{{ t.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this topic?">Delete</button>
+      </div>
+    </div>
+  {% endfor %}
+
+  {% if dd.heard %}
+    <details class="heard">
+      <summary>Heard ({{ dd.heard|length }})</summary>
+      {% for ep in dd.heard %}
+        <article class="card">
+          <div class="row-head"><h3>{{ ep.title }}</h3><span class="meta">{{ ep.duration }} · Heard {{ ep.heard_date }}</span></div>
+          <audio controls preload="none" src="{{ ep.audio_url }}"></audio>
+          <div class="actions">
+            <button class="danger" hx-delete="/deep-dives/{{ ep.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this deep dive?">Delete</button>
+          </div>
+        </article>
+      {% endfor %}
+    </details>
+  {% endif %}
+
+  {% if dd.empty %}
+    <p class="muted">No topics yet. Add one above; your Mac researches up to three ahead while the Claude app is open.</p>
+  {% else %}
+    <p class="muted small">Up to three episodes are prepared ahead. Research runs on your Mac while the Claude app is open.</p>
+  {% endif %}
+</section>

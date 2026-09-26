@@ -1,0 +1,9 @@
+segments:
+  headlines:
+    - name: Test Wire
+      url: https://wire.test/rss
+  local:
+    - name: Test Local
+      url: https://local.test/rss
+    - name: Broken Feed
+      url: https://broken.test/rss

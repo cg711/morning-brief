@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+{% if claude_offline %}
+<p class="banner">Offline test mode — episodes are written without Claude (CLAUDE_OFFLINE=1).</p>
+{% endif %}
+<h1>Morning Brief</h1>
+{% include "partials/today.html" %}
+{% include "partials/deep_dives.html" %}
+<section class="past">
+  <h2>Past 10 days</h2>
+  {% for ep in past %}
+    {% include "partials/past_row.html" %}
+  {% else %}
+    <p class="muted">No earlier episodes yet.</p>
+  {% endfor %}
+</section>
+<footer class="foot">
+  <label for="feed-url">Podcast feed (Apple Podcasts → Library → ⋯ → Follow a Show by URL)</label>
+  <div class="copy">
+    <input id="feed-url" readonly value="{{ feed_url }}">
+    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('feed-url').value); this.textContent = 'Copied'">Copy</button>
+  </div>
+  <label for="deep-feed-url">Deep Dives feed</label>
+  <div class="copy">
+    <input id="deep-feed-url" readonly value="{{ deep_feed_url }}">
+    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('deep-feed-url').value); this.textContent = 'Copied'">Copy</button>
+  </div>
+  <p class="muted small">API spend this month: ${{ "%.2f"|format(month_cost) }}{% if last_run %} · Last run: {{ last_run }}{% endif %}</p>
+</footer>
+{% endblock %}
