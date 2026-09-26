@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
@@ -33,6 +34,7 @@ class ConfigError(Exception):
 
 
 TZ = _load_tz(os.environ.get("BRIEF_TZ"))
+NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{20,64}$")
 
 
 def _parse_time(value: str) -> time:
@@ -55,6 +57,8 @@ class Settings:
     daily_brief: bool = True
     listener_location: str = "Minneapolis"
     worker_token: str = ""
+    ntfy_topic: str = ""
+    ntfy_server: str = "https://ntfy.sh"
 
     @property
     def db_path(self) -> Path:
@@ -84,6 +88,15 @@ class Settings:
         worker_token = env.get("WORKER_TOKEN", "")
         if worker_token and len(worker_token) < 32:
             raise ConfigError("WORKER_TOKEN must be at least 32 characters (or empty to disable the worker API)")
+        ntfy_topic = env.get("NTFY_TOPIC", "").strip()
+        if ntfy_topic and not NTFY_TOPIC_RE.match(ntfy_topic):
+            raise ConfigError(
+                "NTFY_TOPIC must be 20-64 letters, digits, '-' or '_' (or empty to turn pushes off); "
+                "generate one: python3 -c 'import secrets; print(secrets.token_urlsafe(24))'"
+            )
+        ntfy_server = env.get("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/")
+        if not ntfy_server.startswith("https://"):
+            raise ConfigError("NTFY_SERVER must be an https:// URL")
         return cls(
             data_dir=Path(env.get("DATA_DIR", "data")),
             feed_token=token,
@@ -98,4 +111,6 @@ class Settings:
             daily_brief=env.get("DAILY_BRIEF", "1") != "0",
             listener_location=env.get("LISTENER_LOCATION", "Minneapolis").strip() or "Minneapolis",
             worker_token=worker_token,
+            ntfy_topic=ntfy_topic,
+            ntfy_server=ntfy_server,
         )

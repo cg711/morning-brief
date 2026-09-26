@@ -1,9 +1,10 @@
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
-from morning_brief import deepdives
+from morning_brief import db, deepdives
 from morning_brief.app import create_app
 from tests.helpers import NOW, deep_dive_script
 
@@ -138,3 +139,36 @@ def test_daily_brief_off(settings):
     with TestClient(app) as c:
         assert "Daily brief is off (DAILY_BRIEF=0)." in c.get("/").text
         assert c.post("/generate", headers=HX).status_code == 409
+
+
+def test_worker_status_line_and_partial(ui):
+    conn = conn_of(ui)
+    html = ui.get("/").text
+    assert 'id="worker-status"' in html and "checked in yet" in html  # the apostrophe is HTML-escaped
+    assert 'hx-get="/partials/worker-status"' in html and 'hx-trigger="every 60s"' in html
+    db.set_state(conn, "worker_last_seen", (NOW - timedelta(minutes=14)).isoformat())
+    part = ui.get("/partials/worker-status").text
+    assert "14 min ago" in part and "caution" not in part
+    db.set_state(conn, "worker_last_seen", (NOW - timedelta(hours=3)).isoformat())
+    assert "caution" in ui.get("/partials/worker-status").text
+
+
+def test_worker_status_hidden_when_worker_disabled(settings):
+    app = create_app(settings, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False)
+    with TestClient(app) as c:
+        assert 'id="worker-status"' not in c.get("/").text
+        part = c.get("/partials/worker-status")
+        assert part.status_code == 200 and part.text == ""
+
+
+def test_running_long_label_and_sig(ui):
+    conn = conn_of(ui)
+    deepdives.add_topic(conn, "Alpha", "", NOW - timedelta(minutes=30))
+    deepdives.claim(conn, NOW - timedelta(minutes=30))
+    html = ui.get("/partials/deep-dives").text
+    assert "running long" not in html
+    sig = html.split("?sig=")[1].split('"')[0]
+    conn.execute("UPDATE topics SET claimed_at = ?, updated_at = ?",
+                 ((NOW - timedelta(minutes=61)).isoformat(),) * 2)
+    later = ui.get(f"/partials/deep-dives?sig={sig}")
+    assert later.status_code == 200 and '<span class="caution">running long</span>' in later.text

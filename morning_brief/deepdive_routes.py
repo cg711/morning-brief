@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -10,8 +11,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import deepdives, podcast
+from . import db, deepdives, podcast
 from .config import TZ
+
+log = logging.getLogger(__name__)
 
 PKG = Path(__file__).resolve().parent
 DEEP_COVER = PKG / "static" / "deep-dives-cover.png"
@@ -26,6 +29,10 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         supplied = request.headers.get("authorization", "")
         if not secrets.compare_digest(supplied.encode(), f"Bearer {settings.worker_token}".encode()):
             raise HTTPException(401)
+        try:
+            db.set_state(conn, "worker_last_seen", clock().isoformat())
+        except Exception as exc:
+            log.warning("could not stamp worker_last_seen: %s", type(exc).__name__)
 
     @router.post("/api/deep-dives/claim")
     def claim(request: Request):
@@ -119,12 +126,18 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
             "heard_date": _local_date(row["heard_at"]) if row["heard_at"] else None,
         }
 
-    def _sig(rows) -> str:
+    def _sig(rows, long_ids=frozenset()) -> str:
         pairs = sorted((row["id"], row["status"]) for row in rows)
-        return hashlib.sha1(str(pairs).encode()).hexdigest()[:12]
+        return hashlib.sha1(str((pairs, sorted(long_ids))).encode()).hexdigest()[:12]
+
+    def worker_view() -> dict | None:
+        if not settings.worker_token:
+            return None
+        return deepdives.worker_status(db.get_state(conn, "worker_last_seen"), clock())
 
     def section_view(error: str | None = None) -> dict:
         rows = deepdives.list_topics(conn)
+        long_ids = {r["id"] for r in deepdives.long_running(conn, clock())}
         groups = {"ready": [], "in_progress": [], "queued": [], "failed": [], "heard": []}
         for row in rows:
             status = row["status"]
@@ -132,14 +145,15 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
                 groups[status].append(episode(row))
             elif status in ("researching", "speaking"):
                 groups["in_progress"].append({"id": row["id"], "topic": row["topic"], "status": status,
-                                              "minutes": _minutes_since(row["updated_at"])})
+                                              "minutes": _minutes_since(row["updated_at"]),
+                                              "long": row["id"] in long_ids})
             else:
                 groups[status].append({"id": row["id"], "topic": row["topic"], "notes": row["notes"],
                                        "error": row["error"]})
         groups["ready"].sort(key=lambda e: e["published_at"], reverse=True)
         groups["heard"].sort(key=lambda e: e["heard_at"], reverse=True)
         return {**groups, "polling": bool(groups["in_progress"]), "error": error,
-                "empty": not any(groups.values()), "sig": _sig(rows)}
+                "empty": not any(groups.values()), "sig": _sig(rows, long_ids), "worker": worker_view()}
 
     def render_section(request: Request, error: str | None = None, view: dict | None = None):
         return templates.TemplateResponse(request, "partials/deep_dives.html", {"dd": view or section_view(error)})
@@ -150,6 +164,13 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         if sig is not None and sig == view["sig"]:
             return Response(status_code=204)
         return render_section(request, view=view)
+
+    @router.get("/partials/worker-status")
+    def worker_status_partial(request: Request):
+        ws = worker_view()
+        if ws is None:
+            return Response(status_code=200)
+        return templates.TemplateResponse(request, "partials/worker_status.html", {"ws": ws})
 
     @router.post("/deep-dives")
     async def add(request: Request):

@@ -41,6 +41,8 @@ Then start it:
 mkdir -p data && docker compose up -d --build
 ```
 
+The container runs as uid:gid 1000:1000 by default, not root. If your user's `id -u` differs, set `PUID` and `PGID` in `.env`. **Upgrading from an older version** that ran as root: run `sudo chown -R 1000:1000 data` once (or your `PUID:PGID`) before restarting.
+
 Open `http://<TAILSCALE_IP>:8430`. The first episode downloads the Kokoro model (~340 MB) into `data/models/`.
 
 > The web UI has no login. Keep it on a private network (Tailscale or your LAN); don't expose port 8430 to the internet.
@@ -77,6 +79,18 @@ How it behaves:
 - **Mark heard** frees a slot, and so does waiting 7 days. Heard episodes are deleted after 30 days.
 - An idle hourly check is a single request, so it costs next to nothing.
 
+## Notifications (optional)
+
+The server can push to your phone through [ntfy](https://ntfy.sh) when a deep dive is ready, and when research or speech is running much longer than usual (research over 60 minutes, speech over 40).
+
+1. Generate a topic name: `python3 -c 'import secrets; print(secrets.token_urlsafe(24))'`. It's the only secret, so keep it long and random.
+2. Put it in `.env` as `NTFY_TOPIC` and restart the container.
+3. Install the ntfy app on your phone and subscribe to that topic on `ntfy.sh`.
+
+With the public ntfy.sh server, episode titles and topic names pass through ntfy.sh. To avoid that, run your own ntfy server and set `NTFY_SERVER`.
+
+The web page also shows when the Mac worker last checked in. The line turns amber after 2 hours of silence.
+
 ## Daily brief (optional)
 
 Set `DAILY_BRIEF=1` and `ANTHROPIC_API_KEY` in `.env`. Pick your `LISTENER_LOCATION` and replace the `local` feeds in `feeds.yaml`, which default to Minneapolis. Episodes generate at `RUN_AT` (default 08:00) and retry at `RETRY_AT` if the first attempt fails.
@@ -102,7 +116,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 - Kokoro's bundled espeak doesn't run on macOS. Set `FAKE_SPEECH=1` for silent placeholder audio on a Mac, and run the real-speech test inside the container:
 
   ```bash
-  docker compose run --rm -v "$PWD":/work -w /work morning-brief sh -c "pip install -q pytest && python -m pytest -q -p no:cacheprovider -m container"
+  docker compose run --rm -v "$PWD":/work -w /work morning-brief sh -c "pip install -q --user pytest && python -m pytest -q -p no:cacheprovider -m container"
   ```
 
 - `CLAUDE_OFFLINE=1` swaps the Anthropic API for a deterministic local stand-in. It lets you run the whole daily pipeline for free; it's a plumbing check, not a quality check.

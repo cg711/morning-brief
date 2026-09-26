@@ -154,3 +154,18 @@ def delete_episode_row(conn, date: str) -> bool:
 
 def episode_dates_before(conn, date: str) -> list[str]:
     return [r["date"] for r in conn.execute("SELECT date FROM episodes WHERE date < ? ORDER BY date", (date,))]
+
+
+# --- app state (small key/value facts such as the worker's last check-in) ----
+
+def get_state(conn, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_state(conn, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )

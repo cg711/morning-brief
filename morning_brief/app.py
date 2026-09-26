@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db, deepdive_render, deepdive_routes, pipeline, podcast, retention, scheduler
+from . import db, deepdive_render, deepdive_routes, notify, pipeline, podcast, retention, scheduler
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
@@ -47,27 +47,28 @@ def _local(iso: str) -> str:
 
 
 def create_app(settings: Settings | None = None, *, clock=None, start_run=None, start_render=None,
-                start_scheduler=True) -> FastAPI:
+                start_scheduler=True, notifier=None) -> FastAPI:
     _configure_logging()
     settings = settings or Settings.from_env()
     clock = clock or (lambda: datetime.now(timezone.utc))
+    notifier = notifier or notify.send
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     conn = db.connect(settings.db_path)
     db.migrate(conn)
     db.fail_interrupted_runs(conn, clock().isoformat())
     start_run = start_run or (lambda trigger: scheduler.start_background_run(settings, trigger))
-    start_render = start_render or (lambda topic_id: deepdive_render.start(settings, topic_id))
+    start_render = start_render or (lambda topic_id: deepdive_render.start(settings, topic_id, notify=notifier))
     settings.deep_dives_dir.mkdir(parents=True, exist_ok=True)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         sched = None
         if start_scheduler:
-            sched = scheduler.build(settings, conn, clock, start_run)
+            sched = scheduler.build(settings, conn, clock, start_run, notifier)
             sched.start()
             scheduler.catch_up(settings, conn, clock, start_run)
-            deepdive_render.resume(settings, conn)
+            deepdive_render.resume(settings, conn, notify=notifier)
         yield
         if sched:
             sched.shutdown(wait=False)
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     app = FastAPI(title="Morning Brief", lifespan=lifespan)
     app.state.conn, app.state.settings, app.state.clock, app.state.start_run = conn, settings, clock, start_run
     app.state.start_render = start_render
+    app.state.notifier = notifier
     app.mount("/static", StaticFiles(directory=PKG / "static"), name="static")
 
     @app.middleware("http")

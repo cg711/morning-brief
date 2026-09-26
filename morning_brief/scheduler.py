@@ -6,7 +6,7 @@ from datetime import datetime, time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, deepdives, pipeline, retention
+from . import db, deepdives, notify as notify_mod, pipeline, retention
 from .config import Settings, TZ
 
 log = logging.getLogger(__name__)
@@ -69,7 +69,23 @@ def prune_job(conn, settings: Settings, clock) -> None:
     log.info("deep-dive housekeeping: %s", result)
 
 
-def build(settings: Settings, conn, clock, start_run) -> BackgroundScheduler:
+def long_running_job(conn, settings: Settings, clock, notify) -> int:
+    """Push once per stage for each topic running well past its normal time. Returns pushes sent."""
+    now = clock()
+    sent = 0
+    for row in deepdives.long_running(conn, now):
+        if not deepdives.mark_long_notified(conn, row["id"], row["status"]):
+            continue
+        try:
+            notify(settings, "Deep dive running long",
+                   f"{row['topic']}: {row['status']} for {deepdives.stage_minutes(row, now)} min", ["hourglass"])
+            sent += 1
+        except Exception:
+            log.exception("deep dive %s: running-long push failed", row["id"])
+    return sent
+
+
+def build(settings: Settings, conn, clock, start_run, notifier=None) -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone=TZ)
     common = {"misfire_grace_time": 3600, "coalesce": True, "replace_existing": True}
     if settings.daily_brief:
@@ -78,4 +94,6 @@ def build(settings: Settings, conn, clock, start_run) -> BackgroundScheduler:
         sched.add_job(retry_if_missing, "cron", args=[conn, clock, start_run], id="retry",
                       hour=settings.retry_at.hour, minute=settings.retry_at.minute, **common)
     sched.add_job(prune_job, "cron", args=[conn, settings, clock], id="prune", hour=3, minute=0, **common)
+    sched.add_job(long_running_job, "interval", args=[conn, settings, clock, notifier or notify_mod.send],
+                  id="long_running", minutes=5, **common)
     return sched

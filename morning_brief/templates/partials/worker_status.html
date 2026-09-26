@@ -1,0 +1,2 @@
+<p id="worker-status" class="small {% if ws.stale %}caution{% else %}muted{% endif %}"
+   hx-get="/partials/worker-status" hx-trigger="every 60s" hx-swap="outerHTML">{{ ws.text }}</p>
