@@ -62,6 +62,20 @@ def test_resume_rerenders_speaking_topics(conn, settings):
     assert deepdives.get_topic(conn, topic_id)["status"] == "ready"
 
 
+def test_resume_passes_notify_through_to_render(conn, settings):
+    fake = replace(settings, fake_speech=True)
+    topic_id = speaking_topic(conn)
+    calls = []
+    notified = lambda s, title, message, tags: calls.append((title, message, tags))
+    assert deepdive_render.resume(fake, conn, notify=notified) == [topic_id]
+    for _ in range(50):
+        if deepdives.get_topic(conn, topic_id)["status"] == "ready":
+            break
+        time.sleep(0.1)
+    assert deepdives.get_topic(conn, topic_id)["status"] == "ready"
+    assert calls and calls[0][0] == "Deep dive ready"
+
+
 def test_resume_fails_interrupted_topics_and_only_renders_fresh_ones(conn, settings):
     fake = replace(settings, fake_speech=True)
     interrupted = speaking_topic(conn)
@@ -103,3 +117,41 @@ def test_orphan_mp3_removed_when_topic_deleted_during_render_error(conn, setting
     status = deepdive_render.render(settings, topic_id, synthesize=speech.fake_synthesize, now=lambda: NOW)
     assert status == "failed"
     assert not final.exists()
+
+
+def recorder():
+    calls = []
+    return calls, lambda s, title, message, tags: calls.append((title, message, tags))
+
+
+def test_ready_push_after_publish(conn, settings):
+    topic_id = speaking_topic(conn)
+    calls, notify = recorder()
+    fake = lambda passages, voice, models_dir: (b"\xff\xf3", 17 * 60 + 20.0)
+    assert deepdive_render.render(settings, topic_id, synthesize=fake, now=lambda: NOW, notify=notify) == "ready"
+    assert calls == [("Deep dive ready", "How the Fed Began (17 min)", ["headphones"])]
+
+
+def test_no_push_on_failure_or_deletion(conn, settings):
+    calls, notify = recorder()
+    failing = speaking_topic(conn)
+
+    def broken(passages, voice, models_dir):
+        raise RuntimeError("boom")
+
+    assert deepdive_render.render(settings, failing, synthesize=broken, now=lambda: NOW, notify=notify) == "failed"
+    gone = speaking_topic(conn)
+    deepdives.delete_topic(conn, settings.deep_dives_dir, gone)
+    assert deepdive_render.render(settings, gone, synthesize=speech.fake_synthesize, notify=notify) == "gone"
+    assert calls == []
+
+
+def test_push_error_does_not_fail_the_episode(conn, settings):
+    topic_id = speaking_topic(conn)
+
+    def exploding(*args):
+        raise RuntimeError("ntfy down")
+
+    status = deepdive_render.render(settings, topic_id, synthesize=speech.fake_synthesize, now=lambda: NOW,
+                                    notify=exploding)
+    assert status == "ready" and deepdives.get_topic(conn, topic_id)["status"] == "ready"

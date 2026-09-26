@@ -88,3 +88,15 @@ def test_usage_by_model_and_run_pruning(conn):
     assert [(r["model"], r["input_tokens"], r["output_tokens"]) for r in rows] == [
         ("claude-sonnet-5", 1_000_000, 100_000)]
     assert db.delete_runs_before(conn, "2026-08-01") == 1
+
+
+def test_app_state_round_trip(conn):
+    assert db.get_state(conn, "worker_last_seen") is None
+    db.set_state(conn, "worker_last_seen", "a")
+    db.set_state(conn, "worker_last_seen", "b")
+    assert db.get_state(conn, "worker_last_seen") == "b"
+
+
+def test_topics_have_long_notified_column(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(topics)")}
+    assert "long_notified" in cols

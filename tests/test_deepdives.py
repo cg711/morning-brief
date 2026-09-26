@@ -287,3 +287,61 @@ def test_validator_never_raises_on_non_list_sections():
         problems = deepdives.validate_script(script)
         assert isinstance(problems, list), f"Expected list of problems, got {type(problems)}"
         assert any("'sections' must be a list" in p for p in problems), f"Expected sections list error in {problems}"
+
+
+def test_worker_status_text_and_staleness():
+    from morning_brief.deepdives import worker_status
+    iso = lambda d: (NOW - d).isoformat()
+    assert worker_status(None, NOW) == {"text": "Mac worker hasn't checked in yet", "stale": True}
+    assert worker_status(iso(timedelta(seconds=20)), NOW) == {"text": "Mac last checked in just now", "stale": False}
+    assert worker_status(iso(timedelta(minutes=14)), NOW) == {"text": "Mac last checked in 14 min ago", "stale": False}
+    assert worker_status(iso(timedelta(minutes=89)), NOW)["text"] == "Mac last checked in 89 min ago"
+    assert worker_status(iso(timedelta(minutes=120)), NOW) == {"text": "Mac last checked in 2 h ago", "stale": False}
+    assert worker_status(iso(timedelta(minutes=121)), NOW)["stale"] is True
+    # 150 min is exactly 2.5 h; round() would banker's-round this down to "2 h ago"
+    assert worker_status(iso(timedelta(minutes=150)), NOW) == {"text": "Mac last checked in 3 h ago", "stale": True}
+    assert worker_status(iso(timedelta(hours=47)), NOW)["text"] == "Mac last checked in 47 h ago"
+    assert worker_status(iso(timedelta(hours=72)), NOW)["text"] == "Mac last checked in 3 days ago"
+
+
+def _researching(conn, at):
+    topic_id = deepdives.add_topic(conn, "The Fed", "", at)
+    deepdives.claim(conn, at)
+    return topic_id
+
+
+def test_long_running_limits_per_stage(conn):
+    r = _researching(conn, NOW - timedelta(minutes=60))
+    ids = lambda now: [row["id"] for row in deepdives.long_running(conn, now)]
+    assert ids(NOW) == []                                  # exactly 60 min: not yet
+    assert ids(NOW + timedelta(seconds=1)) == [r]
+    deepdives.accept_script(conn, r, deep_dive_script(), NOW)  # speaking; updated_at = NOW
+    assert ids(NOW + timedelta(minutes=40)) == []
+    assert ids(NOW + timedelta(minutes=40, seconds=1)) == [r]
+    row = deepdives.long_running(conn, NOW + timedelta(minutes=45))[0]
+    assert deepdives.stage_minutes(row, NOW + timedelta(minutes=45)) == 45
+
+
+def test_long_running_ignores_other_states(conn):
+    old = NOW - timedelta(days=1)
+    f = _researching(conn, old)
+    deepdives.fail(conn, f, "x", old)
+    deepdives.add_topic(conn, "queued", "", old)  # added after the claim, so it stays queued
+    assert deepdives.long_running(conn, NOW) == []
+
+
+def test_mark_long_notified_once_per_stage_and_cleared_by_claim_and_retry(conn):
+    t = _researching(conn, NOW)
+    assert deepdives.mark_long_notified(conn, t, "researching") is True
+    assert deepdives.mark_long_notified(conn, t, "researching") is False
+    assert deepdives.mark_long_notified(conn, t, "speaking") is False  # not in that status
+    deepdives.accept_script(conn, t, deep_dive_script(), NOW)
+    assert deepdives.mark_long_notified(conn, t, "speaking") is True
+    deepdives.fail(conn, t, "x", NOW)
+    deepdives.retry(conn, t, NOW)  # has a script -> speaking again, flag cleared
+    assert deepdives.mark_long_notified(conn, t, "speaking") is True
+    u = _researching(conn, NOW)
+    deepdives.mark_long_notified(conn, u, "researching")
+    deepdives.release_expired_claims(conn, NOW + timedelta(hours=4))  # back to queued
+    deepdives.claim(conn, NOW + timedelta(hours=4))                   # a fresh attempt clears it
+    assert deepdives.mark_long_notified(conn, u, "researching") is True

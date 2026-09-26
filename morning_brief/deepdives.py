@@ -17,6 +17,9 @@ CLAIM_TTL = timedelta(hours=3)
 AUTO_HEARD_AFTER = timedelta(days=7)
 KEEP_HEARD_FOR = timedelta(days=30)
 STRAY_TMP_AGE = timedelta(days=1)
+WORKER_STALE = timedelta(hours=2)
+RESEARCH_LONG = timedelta(minutes=60)   # measured from claimed_at; normal is about 5 min
+SPEAKING_LONG = timedelta(minutes=40)   # measured from updated_at (script accepted / speech started); normal ~11 min
 TOPIC_MAX, NOTES_MAX, REASON_MAX = 200, 500, 500
 
 # The app shares one SQLite connection across request threads; serialize multi-statement writes.
@@ -121,7 +124,8 @@ def claim(conn, now: datetime):
         if row is None:
             return None
         conn.execute(
-            "UPDATE topics SET status = 'researching', claimed_at = ?, error = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE topics SET status = 'researching', claimed_at = ?, error = NULL, long_notified = NULL, "
+            "updated_at = ? WHERE id = ?",
             (_iso(now), _iso(now), row["id"]),
         )
         return get_topic(conn, row["id"])
@@ -173,7 +177,8 @@ def retry(conn, topic_id: int, now: datetime) -> str | None:
             return None
         status = "speaking" if row["script_json"] else "queued"
         conn.execute(
-            "UPDATE topics SET status = ?, error = NULL, render_attempts = 0, updated_at = ? WHERE id = ?",
+            "UPDATE topics SET status = ?, error = NULL, render_attempts = 0, long_notified = NULL, "
+            "updated_at = ? WHERE id = ?",
             (status, _iso(now), topic_id))
         return status
 
@@ -226,6 +231,47 @@ def sources_for(conn, topic_id: int) -> list:
     return conn.execute(
         "SELECT * FROM deep_dive_sources WHERE topic_id = ? ORDER BY rowid", (topic_id,)
     ).fetchall()
+
+
+def worker_status(last_seen: str | None, now: datetime) -> dict:
+    """The 'Mac last checked in …' line. Stale (amber) once the hourly worker has been silent over 2 hours."""
+    if last_seen is None:
+        return {"text": "Mac worker hasn't checked in yet", "stale": True}
+    age = now - datetime.fromisoformat(last_seen)
+    minutes = max(0, int(age.total_seconds() // 60))
+    if minutes < 1:
+        ago = "just now"
+    elif minutes < 90:
+        ago = f"{minutes} min ago"
+    elif minutes < 48 * 60:
+        ago = f"{int(minutes / 60 + 0.5)} h ago"
+    else:
+        ago = f"{minutes // (24 * 60)} days ago"
+    return {"text": f"Mac last checked in {ago}", "stale": age > WORKER_STALE}
+
+
+def stage_minutes(row, now: datetime) -> int:
+    started = row["claimed_at"] if row["status"] == "researching" else row["updated_at"]
+    return max(0, int((now - datetime.fromisoformat(started)).total_seconds() // 60))
+
+
+def long_running(conn, now: datetime) -> list:
+    """Topics researching or speaking well past their normal time. Feeds the UI label and the push job."""
+    return conn.execute(
+        "SELECT * FROM topics WHERE (status = 'researching' AND claimed_at < ?) "
+        "OR (status = 'speaking' AND updated_at < ?) ORDER BY id",
+        (_iso(now - RESEARCH_LONG), _iso(now - SPEAKING_LONG)),
+    ).fetchall()
+
+
+def mark_long_notified(conn, topic_id: int, status: str) -> bool:
+    """Record that a 'running long' push went out for this stage. False if already recorded, or the topic
+    isn't in that status any more."""
+    with _write_lock:
+        return conn.execute(
+            "UPDATE topics SET long_notified = ? WHERE id = ? AND status = ? AND long_notified IS NOT ?",
+            (status, topic_id, status, status),
+        ).rowcount > 0
 
 
 def housekeeping(conn, directory: Path, now: datetime) -> dict:

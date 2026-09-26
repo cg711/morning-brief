@@ -2,6 +2,7 @@ services:
   morning-brief:
     build: .
     restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
     env_file: .env
     environment:
       TZ: ${BRIEF_TZ:-America/Chicago}

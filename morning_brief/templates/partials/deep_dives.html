@@ -1,6 +1,7 @@
 <section id="deep-dives" class="deep"
   {% if dd.polling %}hx-get="/partials/deep-dives?sig={{ dd.sig }}" hx-trigger="every 10s" hx-swap="outerHTML"{% endif %}>
   <h2>Deep dives</h2>
+  {% if dd.worker %}{% with ws = dd.worker %}{% include "partials/worker_status.html" %}{% endwith %}{% endif %}
 
   <form class="card add-topic" hx-post="/deep-dives" hx-target="#deep-dives" hx-swap="outerHTML">
     <label for="dd-topic">Topic</label>
@@ -28,7 +29,7 @@
     <div class="card">
       <p class="status"><span class="spinner" aria-hidden="true"></span>
         {% if t.status == "researching" %}Researching on your Mac{% else %}Speaking on the server{% endif %}
-        · {{ t.topic }} · {{ t.minutes }} min</p>
+        · {{ t.topic }} · {{ t.minutes }} min{% if t.long %} · <span class="caution">running long</span>{% endif %}</p>
     </div>
   {% endfor %}
 

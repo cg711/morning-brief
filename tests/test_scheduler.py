@@ -31,10 +31,11 @@ def test_retry_if_missing(conn, settings):
 def test_build_registers_jobs(conn, settings):
     sched = scheduler.build(settings, conn, lambda: NOW, lambda t: True)
     jobs = {j.id: str(j.trigger) for j in sched.get_jobs()}
-    assert set(jobs) == {"daily", "retry", "prune"}
+    assert set(jobs) == {"daily", "retry", "prune", "long_running"}
     assert "hour='8', minute='0'" in jobs["daily"]
     assert "hour='8', minute='30'" in jobs["retry"]
     assert "hour='3', minute='0'" in jobs["prune"]
+    assert "interval[0:05:00]" in jobs["long_running"]
 
 
 def test_catch_up_skipped_after_interrupted_run(conn, settings):
@@ -90,9 +91,9 @@ def test_startup_skips_catch_up_when_episode_exists(settings):
 from dataclasses import replace
 
 
-def test_daily_off_registers_only_prune(conn, settings):
+def test_daily_off_registers_only_housekeeping_jobs(conn, settings):
     sched = scheduler.build(replace(settings, daily_brief=False), conn, lambda: NOW, lambda t: True)
-    assert {j.id for j in sched.get_jobs()} == {"prune"}
+    assert {j.id for j in sched.get_jobs()} == {"prune", "long_running"}
 
 
 def test_daily_off_skips_catch_up(conn, settings):
@@ -111,3 +112,48 @@ def test_prune_job_runs_deep_dive_housekeeping(conn, settings):
     deepdives.publish(conn, a, title="T", word_count=2400, duration_s=1.0, audio_bytes=1, now=NOW - timedelta(days=8))
     scheduler.prune_job(conn, settings, lambda: NOW)
     assert deepdives.get_topic(conn, a)["status"] == "heard"
+
+
+def test_long_running_job_pushes_once_per_stage(conn, settings):
+    from morning_brief import deepdives
+    from tests.helpers import deep_dive_script
+    calls = []
+    record = lambda s, title, message, tags: calls.append((title, message, tags))
+    t = deepdives.add_topic(conn, "The Fed", "", NOW - timedelta(minutes=75))
+    deepdives.claim(conn, NOW - timedelta(minutes=75))
+    quick = deepdives.add_topic(conn, "Quick", "", NOW)
+    assert scheduler.long_running_job(conn, settings, lambda: NOW, record) == 1
+    assert calls == [("Deep dive running long", "The Fed: researching for 75 min", ["hourglass"])]
+    assert scheduler.long_running_job(conn, settings, lambda: NOW + timedelta(minutes=5), record) == 0
+    deepdives.accept_script(conn, t, deep_dive_script(), NOW)
+    assert scheduler.long_running_job(conn, settings, lambda: NOW + timedelta(minutes=41), record) == 1
+    assert calls[-1][1] == "The Fed: speaking for 41 min"
+    assert quick  # queued topics never push
+
+
+def test_long_running_job_sends_nothing_for_a_topic_that_finished_before_the_tick(conn, settings):
+    from morning_brief import deepdives
+    from tests.helpers import deep_dive_script
+    calls = []
+    record = lambda s, title, message, tags: calls.append((title, message, tags))
+    # long past the research limit, but it failed (or was accepted and published) before this tick ran
+    a = deepdives.add_topic(conn, "A", "", NOW - timedelta(minutes=90))
+    deepdives.claim(conn, NOW - timedelta(minutes=90))
+    deepdives.fail(conn, a, "gave up", NOW, from_status="researching")
+    b = deepdives.add_topic(conn, "B", "", NOW - timedelta(minutes=90))
+    deepdives.claim(conn, NOW - timedelta(minutes=90))
+    deepdives.accept_script(conn, b, deep_dive_script(), NOW)
+    deepdives.publish(conn, b, title="B", word_count=2400, duration_s=1.0, audio_bytes=1, now=NOW)
+    assert scheduler.long_running_job(conn, settings, lambda: NOW, record) == 0
+    assert calls == []
+
+
+def test_long_running_job_survives_push_errors(conn, settings):
+    from morning_brief import deepdives
+    deepdives.add_topic(conn, "A", "", NOW - timedelta(hours=2))
+    deepdives.claim(conn, NOW - timedelta(hours=2))
+
+    def exploding(*args):
+        raise RuntimeError("down")
+
+    assert scheduler.long_running_job(conn, settings, lambda: NOW, exploding) == 0

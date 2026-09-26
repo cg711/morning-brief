@@ -1,9 +1,10 @@
+import sqlite3
 from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from morning_brief import deepdives
+from morning_brief import db, deepdives
 from morning_brief.app import create_app
 from tests.helpers import NOW, deep_dive_script
 
@@ -37,6 +38,14 @@ def test_auth(api, settings):
     app = create_app(settings, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False)
     with TestClient(app) as disabled:
         assert disabled.post("/api/deep-dives/claim", headers=AUTH).status_code == 503
+
+
+def test_claim_survives_set_state_failure(api, monkeypatch):
+    def exploding(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "set_state", exploding)
+    assert api.post("/api/deep-dives/claim", headers=AUTH).status_code == 204
 
 
 def test_claim_flow(api):
@@ -111,3 +120,12 @@ def test_feed_and_audio(api, settings):
     assert api.get("/feed/deep-dives-cover.png").content[:4] == b"\x89PNG"
     funnel = {"Tailscale-Funnel-Request": "?1"}
     assert api.get(f"/feed/deep-dives/{FEED}.xml", headers=funnel).status_code == 200
+
+
+def test_worker_calls_record_check_in(api):
+    from morning_brief import db
+    conn = api.app.state.conn
+    api.post("/api/deep-dives/claim", headers={"Authorization": "Bearer nope"})
+    assert db.get_state(conn, "worker_last_seen") is None
+    assert api.post("/api/deep-dives/claim", headers=AUTH).status_code == 204  # idle claim still counts
+    assert db.get_state(conn, "worker_last_seen") == NOW.isoformat()

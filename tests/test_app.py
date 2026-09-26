@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from morning_brief import db
+from morning_brief import db, notify
 from morning_brief.app import create_app
 from tests.helpers import NOW, seed_episode
 
@@ -191,3 +191,11 @@ def test_create_app_configures_morning_brief_logging(settings):
         logger.handlers.extend(saved_handlers)
         logger.level = saved_level
         logger.propagate = saved_propagate
+
+
+def test_create_app_exposes_notifier(settings):
+    default = create_app(settings, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False)
+    assert default.state.notifier is notify.send
+    custom = lambda *a: None
+    app = create_app(settings, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False, notifier=custom)
+    assert app.state.notifier is custom

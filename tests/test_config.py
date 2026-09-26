@@ -58,3 +58,16 @@ def test_brief_tz_loader():
     assert _load_tz("America/New_York").key == "America/New_York"
     with pytest.raises(ConfigError, match="BRIEF_TZ"):
         _load_tz("Not/AZone")
+
+
+def test_ntfy_settings():
+    base = {"FEED_TOKEN": "x" * 32}
+    s = Settings.from_env(base)
+    assert s.ntfy_topic == "" and s.ntfy_server == "https://ntfy.sh"
+    s = Settings.from_env({**base, "NTFY_TOPIC": "Ab_-" * 6, "NTFY_SERVER": "https://ntfy.example.com/"})
+    assert s.ntfy_topic == "Ab_-" * 6 and s.ntfy_server == "https://ntfy.example.com"
+    for bad in ("short", "has space in it but long enough", "x" * 65, "ünïcödé" * 4):
+        with pytest.raises(ConfigError):
+            Settings.from_env({**base, "NTFY_TOPIC": bad})
+    with pytest.raises(ConfigError):
+        Settings.from_env({**base, "NTFY_SERVER": "http://ntfy.sh"})

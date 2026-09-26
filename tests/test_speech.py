@@ -67,3 +67,8 @@ def test_real_kokoro_speaks():
     models = Path(os.environ.get("MODELS_DIR", "/srv/data/models"))
     mp3, duration = speech.synthesize(["Good morning. This is a test of the morning brief."], "af_heart", models)
     assert 1.5 < duration < 10 and is_mp3(mp3)
+
+
+@pytest.mark.container
+def test_container_runs_as_non_root():
+    assert os.getuid() != 0
