@@ -1,9 +1,14 @@
 <details class="transcript" id="transcript-{{ ep.id }}">
   <summary>Transcript &amp; sources</summary>
+  {% if ep.fact_check %}<p class="muted small">Fact-checked: {{ ep.fact_check.claims_checked }} claims, {{ ep.fact_check.corrected }} corrected, {{ ep.fact_check.removed }} removed</p>{% endif %}
   <p>{{ ep.intro }}</p>
   {% for sec in ep.sections %}
     <h3>{{ sec.heading }}{% if sec.start is not none %} <button type="button" class="seek" data-seek="{{ '%.1f'|format(sec.start) }}">▶ {{ sec.start_label }}</button>{% endif %}</h3>
-    <p>{{ sec.text }}</p>
+    {% if sec.lines %}
+      {% for line in sec.lines %}<p><strong>{{ line.speaker }}:</strong> {{ line.text }}</p>{% endfor %}
+    {% else %}
+      <p>{{ sec.text }}</p>
+    {% endif %}
     {% if sec.sources %}
       <p class="sources">
         {% for s in sec.sources %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}{% if s.publisher %} — {{ s.publisher }}{% endif %}</a>{% if not loop.last %} · {% endif %}{% endfor %}

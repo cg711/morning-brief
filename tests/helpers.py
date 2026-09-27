@@ -78,3 +78,14 @@ def deep_dive_script(words=2400, sections=4, title="How the Fed Began"):
              "url": "https://www.britannica.com/topic/Federal-Reserve-System"},
         ],
     }
+
+
+def two_host_script(words=2400, sections=4, title="How the Fed Began"):
+    """deep_dive_script() with each section's text split into a host line and a co-host line (same word count)."""
+    script = deep_dive_script(words, sections, title)
+    for section in script["sections"]:
+        spoken = section.pop("text").split()
+        half = len(spoken) // 2
+        section["lines"] = [{"speaker": "host", "text": " ".join(spoken[:half])},
+                            {"speaker": "cohost", "text": " ".join(spoken[half:])}]
+    return script

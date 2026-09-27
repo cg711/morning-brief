@@ -7,6 +7,7 @@ import logging
 import secrets
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -40,7 +41,8 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         row = deepdives.claim(conn, clock())
         if row is None:
             return Response(status_code=204)
-        return {"id": row["id"], "topic": row["topic"], "notes": row["notes"]}
+        return {"id": row["id"], "topic": row["topic"], "notes": row["notes"], "url": row["source_url"],
+                "fact_check": bool(row["fact_check"]), "two_hosts": bool(row["two_hosts"])}
 
     @router.post("/api/deep-dives/{topic_id}/script", status_code=202)
     async def submit_script(topic_id: int, request: Request):
@@ -49,7 +51,11 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
             script = json.loads(await request.body())
         except ValueError:
             return JSONResponse({"problems": ["the body must be valid JSON"]}, status_code=422)
-        problems = deepdives.validate_script(script)
+        topic = deepdives.get_topic(conn, topic_id)
+        if topic is None:
+            raise HTTPException(404)
+        problems = deepdives.validate_script(script, two_hosts=bool(topic["two_hosts"]),
+                                             fact_check=bool(topic["fact_check"]))
         if problems:
             return JSONResponse({"problems": problems}, status_code=422)
         if not deepdives.accept_script(conn, topic_id, script, clock()):
@@ -116,6 +122,23 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
     def _local_date(iso: str) -> str:
         return datetime.fromisoformat(iso).astimezone(TZ).strftime("%b %-d")
 
+    def _link_host(url: str | None) -> str | None:
+        if not url:
+            return None
+        return (urlsplit(url).hostname or "").removeprefix("www.") or None
+
+    def _topic_meta(row) -> dict:
+        return {"source_url": row["source_url"], "link_host": _link_host(row["source_url"]),
+                "fact_check": bool(row["fact_check"]), "two_hosts": bool(row["two_hosts"])}
+
+    def _fact_check_summary(script: dict) -> dict | None:
+        summary = script.get("fact_check")
+        keys = ("claims_checked", "corrected", "removed")
+        if isinstance(summary, dict) and all(
+                isinstance(summary.get(k), int) and not isinstance(summary.get(k), bool) for k in keys):
+            return {k: summary[k] for k in keys}
+        return None
+
     def episode(row, followed: frozenset = frozenset()) -> dict:
         script = json.loads(row["script_json"])
         sources = {s["source_id"]: dict(s) for s in deepdives.sources_for(conn, row["id"])}
@@ -129,7 +152,10 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
             "duration": _duration(row["duration_s"]),
             "audio_url": f"/audio/{settings.feed_token}/deep-dives/{row['id']}.mp3?v={version}",
             "intro": script["intro"], "outro": script["outro"],
-            "sections": [{"heading": s["heading"], "text": s["text"],
+            "sections": [{"heading": s["heading"],
+                          "text": s.get("text"),
+                          "lines": [{"speaker": "Host" if line["speaker"] == "host" else "Co-host",
+                                     "text": line["text"]} for line in s["lines"]] if "lines" in s else None,
                           "sources": [sources[i] for i in s["source_ids"] if i in sources],
                           "start": starts[n] if starts else None,
                           "start_label": _clock_label(starts[n]) if starts else None,
@@ -137,6 +163,7 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
                          for n, s in enumerate(script["sections"])],
             "published_at": row["published_at"], "heard_at": row["heard_at"],
             "heard_date": _local_date(row["heard_at"]) if row["heard_at"] else None,
+            "fact_check": _fact_check_summary(script) if row["fact_check"] else None,
         }
 
     def _sig(rows, long_ids=frozenset()) -> str:
@@ -164,14 +191,19 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
                 groups["in_progress"].append({"id": row["id"], "topic": row["topic"], "status": status,
                                               "minutes": _minutes_since(row["updated_at"]),
                                               "long": row["id"] in long_ids,
-                                              "parent_title": row["parent_title"]})
+                                              "parent_title": row["parent_title"], **_topic_meta(row)})
             else:
                 groups[status].append({"id": row["id"], "topic": row["topic"], "notes": row["notes"],
-                                       "error": row["error"], "parent_title": row["parent_title"]})
+                                       "error": row["error"], "parent_title": row["parent_title"],
+                                       **_topic_meta(row)})
         groups["ready"].sort(key=lambda e: e["published_at"], reverse=True)
         groups["heard"].sort(key=lambda e: e["heard_at"], reverse=True)
+        suggestions = [dict(s) for s in deepdives.list_suggestions(conn)]
         return {**groups, "polling": bool(groups["in_progress"]), "error": error,
-                "empty": not any(groups.values()), "sig": _sig(rows, long_ids), "worker": worker_view()}
+                "empty": not any(groups.values()) and not suggestions,
+                "sig": _sig(rows, long_ids), "worker": worker_view(),
+                "suggestions": suggestions,
+                "defaults": deepdives.get_defaults(conn)}
 
     def render_section(request: Request, error: str | None = None, view: dict | None = None):
         return templates.TemplateResponse(request, "partials/deep_dives.html", {"dd": view or section_view(error)})
@@ -195,9 +227,21 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         check_hx_request(request)
         form = await request.form()
         try:
-            deepdives.add_topic(conn, str(form.get("topic", "")), str(form.get("notes", "")), clock())
+            deepdives.add_topic(conn, str(form.get("topic", "")), str(form.get("notes", "")), clock(),
+                                url=str(form.get("url", "")), fact_check=form.get("fact_check") == "1",
+                                two_hosts=form.get("two_hosts") == "1")
         except deepdives.TopicError as exc:
             return render_section(request, str(exc))
+        return render_section(request)
+
+    @router.post("/deep-dives/defaults")
+    async def set_defaults(request: Request):
+        check_hx_request(request)
+        form = await request.form()
+        try:
+            deepdives.set_default(conn, str(form.get("key", "")), form.get("value") == "1")
+        except ValueError:
+            raise HTTPException(400)
         return render_section(request)
 
     @router.post("/deep-dives/{topic_id}/top")
@@ -223,6 +267,18 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
     def deeper(topic_id: int, section_index: int, request: Request):
         check_hx_request(request)
         deepdives.add_follow_up(conn, topic_id, section_index, clock())
+        return render_section(request)
+
+    @router.post("/suggestions/{suggestion_id}/add")
+    def add_suggestion(suggestion_id: int, request: Request):
+        check_hx_request(request)
+        deepdives.add_suggestion(conn, suggestion_id, clock())
+        return render_section(request)
+
+    @router.post("/suggestions/{suggestion_id}/dismiss")
+    def dismiss_suggestion(suggestion_id: int, request: Request):
+        check_hx_request(request)
+        deepdives.dismiss_suggestion(conn, suggestion_id)
         return render_section(request)
 
     @router.delete("/deep-dives/{topic_id}")

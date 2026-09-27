@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from morning_brief import db, deepdives
 from morning_brief.app import create_app
-from tests.helpers import NOW, deep_dive_script
+from tests.helpers import NOW, deep_dive_script, two_host_script
 
 HX = {"HX-Request": "true"}
 
@@ -40,7 +40,7 @@ def test_add_topic(ui):
     assert ui.post("/deep-dives", data={"topic": "The Fed"}).status_code == 403
     html = ui.post("/deep-dives", data={"topic": "The Fed", "notes": "2008 crisis"}, headers=HX).text
     assert "The Fed" in html and "2008 crisis" in html
-    assert "topic is required" in ui.post("/deep-dives", data={"topic": "  "}, headers=HX).text
+    assert "enter a topic or a link" in ui.post("/deep-dives", data={"topic": "  "}, headers=HX).text
 
 
 def test_queue_actions(ui):
@@ -246,3 +246,112 @@ def test_go_deeper_on_heard_episode(ui):
     parent = publish_with(conn, "Beta", None, heard=True)
     ui.post(f"/deep-dives/{parent}/deeper/2", headers=HX)
     assert [r["topic"] for r in deepdives.list_topics(conn) if r["status"] == "queued"] == ["Part 3"]
+
+
+def test_suggestion_card_add_and_dismiss(ui):
+    conn = conn_of(ui)
+    t = deepdives.add_topic(conn, "Alpha", "", NOW)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, {**deep_dive_script(sections=3), "suggestions": [
+        {"topic": "Bretton Woods", "reason": "The gold link"}, {"topic": "<b>Nixon shock</b>"}]}, NOW)
+    deepdives.publish(conn, t, title="Alpha episode", word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    html = ui.get("/").text
+    assert "Suggested topics" in html and "The gold link" in html and "from Alpha episode" in html
+    assert "<b>Nixon shock</b>" not in html and "&lt;b&gt;Nixon shock&lt;/b&gt;" in html
+    ids = {s["topic"]: s["id"] for s in deepdives.list_suggestions(conn)}
+    assert ui.post(f"/suggestions/{ids['Bretton Woods']}/add").status_code == 403
+    after = ui.post(f"/suggestions/{ids['Bretton Woods']}/add", headers=HX).text
+    assert [r["topic"] for r in deepdives.list_topics(conn) if r["status"] == "queued"] == ["Bretton Woods"]
+    assert f"/suggestions/{ids['Bretton Woods']}/add" not in after
+    ui.post(f"/suggestions/{ids['<b>Nixon shock</b>']}/dismiss", headers=HX)
+    assert "Suggested topics" not in ui.get("/").text
+
+
+def test_form_has_link_and_checkboxes_following_defaults(ui):
+    html = ui.get("/").text
+    assert 'name="url"' in html and 'name="fact_check"' in html and 'name="two_hosts"' in html
+    assert "checked" not in html.split('name="fact_check"')[1].split(">")[0]
+    deepdives.set_default(conn_of(ui), "fact_check", True)
+    html = ui.get("/").text
+    assert "checked" in html.split('name="fact_check"')[1].split(">")[0]
+
+
+def test_defaults_route(ui):
+    conn = conn_of(ui)
+    assert ui.post("/deep-dives/defaults", data={"key": "two_hosts", "value": "1"}).status_code == 403
+    ui.post("/deep-dives/defaults", data={"key": "two_hosts", "value": "1"}, headers=HX)
+    assert deepdives.get_defaults(conn)["two_hosts"] is True
+    ui.post("/deep-dives/defaults", data={"key": "two_hosts"}, headers=HX)  # unchecked: no value sent
+    assert deepdives.get_defaults(conn)["two_hosts"] is False
+    assert ui.post("/deep-dives/defaults", data={"key": "music", "value": "1"}, headers=HX).status_code == 400
+
+
+def test_add_with_link_and_flags_shows_link_and_tags(ui):
+    html = ui.post("/deep-dives", data={"topic": "", "url": "https://www.example.com/a/story",
+                                        "fact_check": "1", "two_hosts": "1"}, headers=HX).text
+    assert "From link: example.com/a/story" in html
+    assert 'title="https://www.example.com/a/story"' in html and "Link: example.com" in html
+    assert ">fact-check<" in html and ">two hosts<" in html
+    row = deepdives.list_topics(conn_of(ui))[0]
+    assert (row["fact_check"], row["two_hosts"]) == (1, 1)
+    bad = ui.post("/deep-dives", data={"topic": "", "url": "nope"}, headers=HX).text
+    assert "the link must be a full http(s) URL" in bad
+
+
+def test_two_host_transcript_and_fact_check_line(ui):
+    conn = conn_of(ui)
+    t = deepdives.add_topic(conn, "Fed", "", NOW, two_hosts=True, fact_check=True)
+    deepdives.claim(conn, NOW)
+    script = two_host_script(sections=3)
+    script["sections"][0]["lines"][1]["text"] = "<i>really?</i> " + script["sections"][0]["lines"][1]["text"]
+    script["fact_check"] = {"claims_checked": 41, "corrected": 3, "removed": 1}
+    deepdives.accept_script(conn, t, script, NOW)
+    deepdives.publish(conn, t, title="Fed episode", word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    html = ui.get("/").text
+    assert "<strong>Host:</strong>" in html and "<strong>Co-host:</strong>" in html
+    assert "&lt;i&gt;really?&lt;/i&gt;" in html
+    assert "Fact-checked: 41 claims, 3 corrected, 1 removed" in html
+
+
+def test_fact_check_line_hidden_when_flag_off(ui):
+    conn = conn_of(ui)
+    t = deepdives.add_topic(conn, "Fed", "", NOW)  # fact_check flag off
+    deepdives.claim(conn, NOW)
+    script = deep_dive_script(sections=3)
+    script["fact_check"] = {"claims_checked": 0, "corrected": 0, "removed": 0}
+    deepdives.accept_script(conn, t, script, NOW)
+    deepdives.publish(conn, t, title="Fed episode", word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    assert "Fact-checked:" not in ui.get("/").text
+
+
+def test_fact_check_line_hidden_when_stored_summary_has_bool(ui):
+    conn = conn_of(ui)
+    t = deepdives.add_topic(conn, "Fed", "", NOW, fact_check=True)
+    deepdives.claim(conn, NOW)
+    script = deep_dive_script(sections=3)
+    script["fact_check"] = {"claims_checked": True, "corrected": 0, "removed": 0}
+    deepdives.accept_script(conn, t, script, NOW)
+    deepdives.publish(conn, t, title="Fed episode", word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    assert "Fact-checked:" not in ui.get("/").text
+
+
+def test_link_host_strips_userinfo_and_port(ui):
+    conn = conn_of(ui)
+    deepdives.add_topic(conn, "T", "", NOW, url="https://user:pw@example.com:8443/a")
+    display = ui.get("/").text.split("Link: ")[1].split("</p>")[0]
+    assert display == "example.com"
+
+
+def test_empty_flag_false_when_only_suggestion_present(ui, settings):
+    conn = conn_of(ui)
+    t = deepdives.add_topic(conn, "Alpha", "", NOW)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, {**deep_dive_script(sections=3), "suggestions": [
+        {"topic": "Bretton Woods", "reason": "The gold link"}]}, NOW)
+    deepdives.publish(conn, t, title="Alpha episode", word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    deepdives.delete_topic(conn, settings.deep_dives_dir, t)
+    assert deepdives.list_topics(conn) == []
+    assert deepdives.list_suggestions(conn)
+    html = ui.get("/").text
+    assert "No topics yet" not in html
+    assert "Suggested topics" in html

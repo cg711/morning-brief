@@ -1,0 +1,2 @@
+{% if t.link_host %}<p class="muted small" title="{{ t.source_url }}">Link: {{ t.link_host }}</p>{% endif %}
+{% if t.fact_check or t.two_hosts %}<p class="tags">{% if t.fact_check %}<span class="tag">fact-check</span>{% endif %}{% if t.two_hosts %}<span class="tag">two hosts</span>{% endif %}</p>{% endif %}

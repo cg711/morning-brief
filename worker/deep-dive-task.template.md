@@ -27,10 +27,12 @@ curl -s -o {{CACHE_DIR}}/claim.json -w '%{http_code}' --connect-timeout 10 --max
 
 - `204`: nothing to do. Reply `No deep dive to research.` and stop. Use no other tools.
 - `000` or a connection error: the server or network is unreachable. Reply `server unreachable.` and stop.
-- `200`: read `{{CACHE_DIR}}/claim.json`: `{"id": <int>, "topic": "...", "notes": "..."}`. Continue. Below, replace every `<id>` with that numeric id.
+- `200`: read `{{CACHE_DIR}}/claim.json`: `{"id": <int>, "topic": "...", "notes": "...", "url": "https://..." or null, "fact_check": true|false, "two_hosts": true|false}`. Continue. Below, replace every `<id>` with that numeric id.
 - Anything else: reply with the code and stop.
 
 ## 2. Research
+
+**If `url` is set:** fetch that page first. It is the episode's primary source: list it as source `s1` with that exact URL, and build the episode around explaining and putting it in context. Then research around it for background, other viewpoints and what happened next. If the topic starts with `From link:`, it is only a placeholder; otherwise treat the topic as the angle to take. If the page can't be read (paywall, login wall, error or an empty page), use the `/fail` step below with the reason `could not read the link: <what happened>`.
 
 - Research the topic, following the notes if there are any. Use web search and read the actual pages.
 - Use 8–15 reputable sources: primary sources, government and academic sites, established news organisations, reference works.
@@ -58,6 +60,20 @@ Write a script for one host to read aloud: about 20 minutes, **2,300–2,800 wor
 - No markdown, lists, URLs or stage directions in any spoken text.
 - Structure: a hook intro, **4–8 sections** that build on one another, and a short outro that ties it together.
 
+**If `two_hosts` is true**, write a conversation between two hosts instead of a monologue:
+- The **host** leads and explains. The **cohost** asks the questions a curious listener would, pushes back on weak points, and sums up what matters. It is a real exchange, not one script split into alternating paragraphs.
+- Most turns are 1–4 sentences; the host may occasionally explain at more length. The hosts never say each other's names, and there are no stage directions.
+- The `intro` and `outro` are spoken by the host alone and stay plain strings.
+- Each section uses `lines` instead of `text`: `{"heading": "…", "lines": [{"speaker": "host", "text": "…"}, {"speaker": "cohost", "text": "…"}], "source_ids": ["s1"]}`. Use both speakers, and at most 80 lines per section. The word limits count every line.
+
+**If `fact_check` is true**, after drafting and before saving:
+1. List every factual claim in the script: names, numbers, dates, quotes and cause-and-effect claims.
+2. Check each one against the pages you cited, re-opening them as needed (about 10 more page reads at most).
+3. Correct anything the sources state differently, and remove anything they don't support.
+4. Add `"fact_check": {"claims_checked": <n>, "corrected": <n>, "removed": <n>}` to the script, with whole numbers, where `claims_checked >= 1 and corrected + removed <= claims_checked`.
+
+**Always** add up to 3 suggestions for future deep dives, taken from related topics the research turned up. They should be specific and distinct from this episode: `"suggestions": [{"topic": "…", "reason": "one sentence on why it's worth an episode"}]`.
+
 Save it as JSON to `{{CACHE_DIR}}/script-<id>.json` in exactly this shape:
 
 ```json
@@ -66,20 +82,27 @@ Save it as JSON to `{{CACHE_DIR}}/script-<id>.json` in exactly this shape:
   "intro": "…",
   "sections": [{"heading": "…", "text": "…", "source_ids": ["s1", "s4"]}],
   "outro": "…",
-  "sources": [{"id": "s1", "title": "Page title", "publisher": "Organisation", "url": "https://…"}]
+  "sources": [{"id": "s1", "title": "Page title", "publisher": "Organisation", "url": "https://…"}],
+  "fact_check": {"claims_checked": <n>, "corrected": <n>, "removed": <n>},
+  "suggestions": [{"topic": "…", "reason": "…"}]
 }
 ```
+
+(Two hosts: each section has `lines` instead of `text`, as described above. Include `fact_check` only when it was requested.)
 
 Rules the server enforces:
 - 2,000–3,000 words in total;
 - 3–12 sections, each citing at least one source id listed in `sources`;
 - unique source ids, and http(s) URLs;
 - title non-empty and at most 120 characters;
-- every section needs a non-empty heading and text;
+- every section needs a non-empty heading, plus `text` (one host) or `lines` (two hosts), never both;
 - every source needs a non-empty title;
-- no control characters.
+- no control characters;
+- sections use `text` for one host and `lines` for two hosts, matching `two_hosts` in the claim; a two-host script uses both `host` and `cohost`;
+- when `fact_check` was requested, the `fact_check` object is required;
+- invalid suggestions are silently dropped, so they never cause a rejection.
 
-Before submitting, count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-<id>.json')); print(sum(len(t.split()) for t in [s['intro'], *[x['text'] for x in s['sections']], s['outro']]))"`.
+Before submitting, count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-<id>.json')); print(sum(len(t.split()) for t in [s['intro'], *[x.get('text') or ' '.join(l['text'] for l in x.get('lines', [])) for x in s['sections']], s['outro']]))"`.
 
 ## 4. Submit
 

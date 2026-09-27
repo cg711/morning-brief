@@ -5,7 +5,7 @@ from dataclasses import replace
 from mutagen.id3 import ID3
 
 from morning_brief import deepdive_render, deepdives, pipeline, speech
-from tests.helpers import NOW, deep_dive_script
+from tests.helpers import NOW, deep_dive_script, two_host_script
 
 
 def speaking_topic(conn, script=None):
@@ -171,6 +171,31 @@ def test_render_embeds_and_stores_chapters(conn, settings):
     row = [r for r in deepdives.list_topics(conn) if r["id"] == topic_id][0]
     stored = json.loads(row["chapters_json"])
     assert [c[0] for c in stored] == titles and stored[1][1] > 4.0  # after the intro sting + title + intro
+
+
+def test_two_host_render_publishes_with_chapters(conn, settings):
+    topic_id = deepdives.add_topic(conn, "Fed", "", NOW, two_hosts=True)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, topic_id, two_host_script(), NOW)
+    assert deepdive_render.render(settings, topic_id, synthesize=speech.fake_synthesize, now=lambda: NOW) == "ready"
+    tags = ID3(str(deepdives.audio_path(settings.deep_dives_dir, topic_id)))
+    titles = [c.sub_frames["TIT2"].text[0] for c in sorted(tags.getall("CHAP"), key=lambda c: c.start_time)]
+    assert titles == ["Introduction", "Part 1", "Part 2", "Part 3", "Part 4", "Wrap-up"]
+
+
+def test_render_passes_both_voices(conn, settings):
+    seen = []
+
+    def recording(passages, voice, models_dir, music=None):
+        seen.append((passages, voice))
+        return speech.fake_synthesize(passages, voice, models_dir, music)
+
+    topic_id = deepdives.add_topic(conn, "Fed", "", NOW, two_hosts=True)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, topic_id, two_host_script(), NOW)
+    deepdive_render.render(replace(settings, cohost_voice="bf_emma"), topic_id, synthesize=recording, now=lambda: NOW)
+    (passages, voice), = seen
+    assert voice == settings.voice and {v for v, _ in passages[2]} == {settings.voice, "bf_emma"}
 
 
 def test_tagging_failure_still_publishes(conn, settings, monkeypatch):

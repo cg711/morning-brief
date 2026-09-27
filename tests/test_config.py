@@ -78,3 +78,9 @@ def test_music_setting(tmp_path):
     assert Settings.from_env(base).music is True
     assert Settings.from_env({**base, "MUSIC": "0"}).music is False
     assert Settings.from_env(base).music_dir == tmp_path / "music"
+
+
+def test_cohost_voice_setting():
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32}).cohost_voice == "af_heart"
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32, "COHOST_VOICE": "bf_emma"}).cohost_voice == "bf_emma"
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32, "COHOST_VOICE": ""}).cohost_voice == "af_heart"

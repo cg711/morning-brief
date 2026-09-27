@@ -6,10 +6,14 @@ Validation of submitted scripts lives at the bottom of this module (Task 2).
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from . import db
 
 MAX_ACTIVE = 3
 ACTIVE = ("researching", "speaking", "ready")
@@ -21,6 +25,12 @@ WORKER_STALE = timedelta(hours=2)
 RESEARCH_LONG = timedelta(minutes=60)   # measured from claimed_at; normal is about 5 min
 SPEAKING_LONG = timedelta(minutes=40)   # measured from updated_at (script accepted / speech started); normal ~11 min
 TOPIC_MAX, NOTES_MAX, REASON_MAX = 200, 500, 500
+URL_MAX = 2000
+SUGGESTIONS_MAX, SUGGESTION_REASON_MAX = 3, 300
+DEFAULT_KEYS = ("fact_check", "two_hosts")
+_WHITESPACE_RE = re.compile(r"\s")
+
+log = logging.getLogger(__name__)
 
 # The app shares one SQLite connection across request threads; serialize multi-statement writes.
 _write_lock = threading.RLock()
@@ -46,10 +56,34 @@ def audio_path(directory: Path, topic_id: int) -> Path:
     return directory / f"{topic_id}.mp3"
 
 
-def add_topic(conn, topic: str, notes: str, now: datetime) -> int:
+def _clean_link(url: str | None) -> str | None:
+    url = (url or "").strip()
+    if not url:
+        return None
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    if (len(url) > URL_MAX or not url.lower().startswith(("http://", "https://")) or not host
+            or _WHITESPACE_RE.search(url) or _has_control_chars(url)):
+        raise TopicError("the link must be a full http(s) URL")
+    return url
+
+
+def _link_display(url: str) -> str:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").removeprefix("www.")
+    return host + parts.path.rstrip("/")
+
+
+def add_topic(conn, topic: str, notes: str, now: datetime, *, url: str | None = None,
+              fact_check: bool = False, two_hosts: bool = False) -> int:
     topic, notes = topic.strip(), notes.strip()
+    url = _clean_link(url)
+    if not topic and url:
+        topic = f"From link: {_link_display(url)}"[:TOPIC_MAX]
     if not topic:
-        raise TopicError("topic is required")
+        raise TopicError("enter a topic or a link")
     if len(topic) > TOPIC_MAX:
         raise TopicError(f"topic must be at most {TOPIC_MAX} characters")
     if len(notes) > NOTES_MAX:
@@ -61,11 +95,23 @@ def add_topic(conn, topic: str, notes: str, now: datetime) -> int:
     with _write_lock:
         position = conn.execute("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM topics").fetchone()["p"]
         cur = conn.execute(
-            "INSERT INTO topics (topic, notes, position, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'queued', ?, ?)",
-            (topic, notes, position, _iso(now), _iso(now)),
+            "INSERT INTO topics (topic, notes, position, status, created_at, updated_at, source_url, fact_check, "
+            "two_hosts) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+            (topic, notes, position, _iso(now), _iso(now), url, int(fact_check), int(two_hosts)),
         )
         return cur.lastrowid
+
+
+def get_defaults(conn) -> dict[str, bool]:
+    """The starting state of the per-topic checkboxes (also used for follow-ups and suggestions)."""
+    return {key: db.get_state(conn, f"default_{key}") == "1" for key in DEFAULT_KEYS}
+
+
+def set_default(conn, key: str, value: bool) -> None:
+    if key not in DEFAULT_KEYS:
+        raise ValueError(f"unknown default {key!r}")
+    with _write_lock:
+        db.set_state(conn, f"default_{key}", "1" if value else "0")
 
 
 FOLLOW_UP_TITLE_MAX, FOLLOW_UP_HEADING_MAX = 120, 150
@@ -106,17 +152,78 @@ def add_follow_up(conn, parent_id: int, section_index: int, now: datetime) -> in
             return None
         section = sections[section_index]
         top = conn.execute("SELECT COALESCE(MIN(position), 1) - 1 AS p FROM topics").fetchone()["p"]
+        flags = get_defaults(conn)
         cur = conn.execute(
             "INSERT INTO topics (topic, notes, position, status, created_at, updated_at, parent_topic_id, "
-            "parent_section) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
-            (section["heading"][:TOPIC_MAX], follow_up_notes(parent["title"], section["heading"], section["text"]),
-             top, _iso(now), _iso(now), parent_id, section_index),
+            "parent_section, fact_check, two_hosts) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+            (section["heading"][:TOPIC_MAX], follow_up_notes(parent["title"], section["heading"], section_text(section)),
+             top, _iso(now), _iso(now), parent_id, section_index, int(flags["fact_check"]),
+             int(flags["two_hosts"])),
         )
         return cur.lastrowid
 
 
 def get_topic(conn, topic_id: int):
     return conn.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
+
+
+def clean_suggestions(raw) -> list[dict]:
+    """The worker's suggested next topics, cleaned. Invalid entries are dropped (never fail a script)."""
+    if not isinstance(raw, list):
+        return []
+    kept, dropped = [], 0
+    for item in raw:
+        topic = item.get("topic") if isinstance(item, dict) else None
+        reason = item.get("reason", "") if isinstance(item, dict) else ""
+        if (not isinstance(topic, str) or not topic.strip() or len(topic.strip()) > TOPIC_MAX
+                or _has_control_chars(topic) or not isinstance(reason, str) or _has_control_chars(reason)):
+            dropped += 1
+            continue
+        if len(kept) < SUGGESTIONS_MAX:
+            kept.append({"topic": topic.strip(), "reason": reason.strip()[:SUGGESTION_REASON_MAX]})
+    if dropped:
+        log.info("dropped %d invalid suggestion(s)", dropped)
+    return kept
+
+
+def _store_suggestions(conn, topic_id: int, suggestions: list[dict], now: datetime) -> None:
+    """Insert new suggestions, skipping any that match (case-insensitively) a topic or a live suggestion."""
+    taken = {r[0].strip().casefold() for r in conn.execute(
+        "SELECT topic FROM topics UNION ALL SELECT topic FROM suggestions WHERE status IN ('new', 'added')")}
+    for s in suggestions:
+        key = s["topic"].casefold()
+        if key in taken:
+            continue
+        taken.add(key)
+        conn.execute(
+            "INSERT INTO suggestions (topic, reason, from_topic_id, status, created_at) VALUES (?, ?, ?, 'new', ?)",
+            (s["topic"], s["reason"], topic_id, _iso(now)))
+
+
+def list_suggestions(conn, limit: int = 6) -> list:
+    return conn.execute(
+        "SELECT s.id, s.topic, s.reason, d.title AS from_title FROM suggestions s "
+        "LEFT JOIN deep_dives d ON d.topic_id = s.from_topic_id "
+        "WHERE s.status = 'new' ORDER BY s.id DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def add_suggestion(conn, suggestion_id: int, now: datetime) -> int | None:
+    """Queue a suggested topic at the end of the queue with the page defaults. None if it isn't 'new'."""
+    with _write_lock:
+        row = conn.execute("SELECT topic, reason FROM suggestions WHERE id = ? AND status = 'new'",
+                           (suggestion_id,)).fetchone()
+        if row is None:
+            return None
+        topic_id = add_topic(conn, row["topic"], row["reason"], now, **get_defaults(conn))
+        conn.execute("UPDATE suggestions SET status = 'added' WHERE id = ?", (suggestion_id,))
+        return topic_id
+
+
+def dismiss_suggestion(conn, suggestion_id: int) -> bool:
+    with _write_lock:
+        return conn.execute("UPDATE suggestions SET status = 'dismissed' WHERE id = ? AND status = 'new'",
+                            (suggestion_id,)).rowcount > 0
 
 
 def list_topics(conn) -> list:
@@ -199,6 +306,7 @@ def accept_script(conn, topic_id: int, script: dict, now: datetime) -> bool:
                 "INSERT INTO deep_dive_sources (topic_id, source_id, title, publisher, url) VALUES (?, ?, ?, ?, ?)",
                 [(topic_id, s["id"], s["title"], s.get("publisher") or "", s["url"]) for s in script["sources"]],
             )
+            _store_suggestions(conn, topic_id, clean_suggestions(script.get("suggestions")), now)
             conn.execute("COMMIT")
             return True
         except Exception:
@@ -354,11 +462,24 @@ MIN_WORDS, MAX_WORDS = 2000, 3000
 MIN_SECTIONS, MAX_SECTIONS = 3, 12
 TITLE_MAX = 120
 
+SPEAKERS = ("host", "cohost")
+MAX_LINES = 80
+FACT_CHECK_KEYS = ("claims_checked", "corrected", "removed")
+
+
+def section_text(section: dict) -> str:
+    """The spoken words of a section, whichever format (text, or two-host lines) it uses."""
+    lines = section.get("lines")
+    if isinstance(lines, list):
+        return " ".join(line["text"] for line in lines if isinstance(line, dict) and isinstance(line.get("text"), str))
+    text = section.get("text")
+    return text if isinstance(text, str) else ""
+
 
 def script_word_count(script: dict) -> int:
     sections = script.get("sections")
     sections = sections if isinstance(sections, list) else []
-    texts = [script.get("intro"), *(s.get("text") for s in sections if isinstance(s, dict)),
+    texts = [script.get("intro"), *(section_text(s) for s in sections if isinstance(s, dict)),
              script.get("outro")]
     return sum(len(t.split()) for t in texts if isinstance(t, str))
 
@@ -367,7 +488,42 @@ def _nonempty(value) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def validate_script(script) -> list[str]:
+def _line_problems(n: int, lines, seen: set) -> list[str]:
+    if not isinstance(lines, list) or not lines:
+        return [f"section {n} 'lines' must be a non-empty list"]
+    problems = []
+    if len(lines) > MAX_LINES:
+        problems.append(f"section {n} has {len(lines)} lines; at most {MAX_LINES}")
+    for m, line in enumerate(lines, start=1):
+        if not isinstance(line, dict):
+            problems.append(f"section {n} line {m} must be an object")
+            continue
+        if line.get("speaker") not in SPEAKERS:
+            problems.append(f"section {n} line {m} speaker must be 'host' or 'cohost'")
+        else:
+            seen.add(line["speaker"])
+        text = line.get("text")
+        if not _nonempty(text):
+            problems.append(f"section {n} line {m} needs non-empty 'text'")
+        elif _has_control_chars(text):
+            problems.append(f"section {n} line {m} text contains control characters")
+    return problems
+
+
+def _fact_check_problems(summary) -> list[str]:
+    if not isinstance(summary, dict):
+        return ["'fact_check' must be an object with claims_checked, corrected and removed "
+                 "(is the worker prompt up to date?)"]
+    values = [summary.get(k) for k in FACT_CHECK_KEYS]
+    if any(not isinstance(v, int) or isinstance(v, bool) for v in values):
+        return ["'fact_check' needs whole-number claims_checked, corrected and removed"]
+    checked, corrected, removed = values
+    if checked < 1 or corrected < 0 or removed < 0 or corrected + removed > checked:
+        return ["'fact_check' numbers are inconsistent (claims_checked >= 1, corrected + removed <= claims_checked)"]
+    return []
+
+
+def validate_script(script, *, two_hosts: bool = False, fact_check: bool = False) -> list[str]:
     if not isinstance(script, dict):
         return ["the body must be a JSON object"]
     problems = []
@@ -417,16 +573,30 @@ def validate_script(script) -> list[str]:
         sections = []
     elif not MIN_SECTIONS <= len(sections) <= MAX_SECTIONS:
         problems.append(f"there are {len(sections)} sections; there must be {MIN_SECTIONS} to {MAX_SECTIONS}")
+    speakers_seen: set = set()
     for n, section in enumerate(sections, start=1):
         if not isinstance(section, dict):
             problems.append(f"section {n} must be an object")
             continue
-        for key in ("heading", "text"):
-            value = section.get(key)
-            if not _nonempty(value):
-                problems.append(f"section {n} needs a non-empty '{key}'")
-            elif _has_control_chars(value):
-                problems.append(f"section {n} {key} contains control characters")
+        heading = section.get("heading")
+        if not _nonempty(heading):
+            problems.append(f"section {n} needs a non-empty 'heading'")
+        elif _has_control_chars(heading):
+            problems.append(f"section {n} heading contains control characters")
+        if two_hosts:
+            if "text" in section or "lines" not in section:
+                problems.append(f"section {n} must use 'lines' (this topic has two hosts), not 'text' "
+                                 "(is the worker prompt up to date?)")
+            else:
+                problems += _line_problems(n, section["lines"], speakers_seen)
+        elif "lines" in section:
+            problems.append(f"section {n} uses 'lines' but this topic has one host; use 'text'")
+        else:
+            text = section.get("text")
+            if not _nonempty(text):
+                problems.append(f"section {n} needs a non-empty 'text'")
+            elif _has_control_chars(text):
+                problems.append(f"section {n} text contains control characters")
         cited = section.get("source_ids")
         if not isinstance(cited, list) or not cited:
             problems.append(f"section {n} must cite at least one source")
@@ -438,16 +608,25 @@ def validate_script(script) -> list[str]:
     words = script_word_count(script)
     if not MIN_WORDS <= words <= MAX_WORDS:
         problems.append(f"the script is {words} words; it must be between {MIN_WORDS} and {MAX_WORDS}")
+    if two_hosts and sections and speakers_seen and speakers_seen != set(SPEAKERS):
+        problems.append("a two-host script needs both 'host' and 'cohost' lines")
+    if fact_check:
+        problems += _fact_check_problems(script.get("fact_check"))
     return problems
 
 
-def passages(script: dict) -> list[str]:
-    return [
-        f"Morning Brief deep dive: {script['title']}.",
-        script["intro"],
-        *(f"{s['heading']}. {s['text']}" for s in script["sections"]),
-        script["outro"],
-    ]
+def passages(script: dict, *, host_voice: str | None = None, cohost_voice: str | None = None) -> list:
+    """What to speak, in order: title line, intro, one passage per section, outro. A two-host section is a
+    list of (voice, text) lines: the host reads the heading, then the dialogue."""
+    voices = {"host": host_voice, "cohost": cohost_voice}
+    out: list = [f"Morning Brief deep dive: {script['title']}.", script["intro"]]
+    for s in script["sections"]:
+        if "lines" in s:
+            out.append([(host_voice, f"{s['heading']}.")] + [(voices[l["speaker"]], l["text"]) for l in s["lines"]])
+        else:
+            out.append(f"{s['heading']}. {s['text']}")
+    out.append(script["outro"])
+    return out
 
 
 def chapters(script: dict, starts: list[float]) -> list[tuple[str, float]]:
