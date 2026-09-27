@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db, deepdive_render, deepdive_routes, notify, pipeline, podcast, retention, scheduler
+from . import daily_routes, daily_worker, db, deepdive_render, deepdive_routes, notify, pipeline, podcast, retention, scheduler
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
@@ -21,6 +21,10 @@ COVER = PKG / "static" / "cover.png"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FUNNEL_HEADER = "tailscale-funnel-request"
 PUBLIC_PREFIXES = ("/feed/", "/audio/")
+LONG_MINUTES = 30
+STAGE_LABELS = {"starting": "Starting", "fetching": "Gathering stories", "waiting": "Waiting for your Mac",
+                "selecting": "Picking stories", "reading": "Picking stories", "speaking": "Speaking",
+                "publishing": "Publishing"}
 templates = Jinja2Templates(directory=PKG / "templates")
 
 
@@ -47,7 +51,7 @@ def _local(iso: str) -> str:
 
 
 def create_app(settings: Settings | None = None, *, clock=None, start_run=None, start_render=None,
-                start_scheduler=True, notifier=None) -> FastAPI:
+                start_scheduler=True, notifier=None, start_daily_publish=None) -> FastAPI:
     _configure_logging()
     settings = settings or Settings.from_env()
     clock = clock or (lambda: datetime.now(timezone.utc))
@@ -56,9 +60,11 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
     conn = db.connect(settings.db_path)
     db.migrate(conn)
+    daily_worker.fail_interrupted(conn, clock())
     db.fail_interrupted_runs(conn, clock().isoformat())
     start_run = start_run or (lambda trigger: scheduler.start_background_run(settings, trigger))
     start_render = start_render or (lambda topic_id: deepdive_render.start(settings, topic_id, notify=notifier))
+    start_daily_publish = start_daily_publish or (lambda d: daily_worker.start_publish(settings, d))
     settings.deep_dives_dir.mkdir(parents=True, exist_ok=True)
 
     @asynccontextmanager
@@ -109,12 +115,17 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     )
     app.include_router(dd_router)
 
+    app.include_router(daily_routes.make_router(
+        settings=settings, conn=conn, clock=clock, check_worker=dd_router.check_worker,
+        start_publish=start_daily_publish))
+
     def episode_view(row) -> dict:
         script = json.loads(row["script_json"])
         sources = {r["item_id"]: dict(r) for r in db.episode_sources(conn, row["date"])}
         version = int(datetime.fromisoformat(row["updated_at"]).timestamp())
         return {
             "date": row["date"],
+            "version": version,
             "title": podcast.episode_title(row["date"]),
             "duration": _duration(row["duration_s"]),
             "audio_url": f"/audio/{settings.feed_token}/{row['date']}.mp3?v={version}",
@@ -131,19 +142,50 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
         if not settings.daily_brief:
             return {"state": "off", "title": podcast.episode_title(today_str())}
         date = today_str()
+        now = clock()
         episode = db.get_episode(conn, date)
         run = db.latest_run_for(conn, date)
+        job = daily_worker.get_job(conn, date) if settings.worker_mode else None
+        if job is not None and job["status"] in ("waiting", "claimed", "speaking"):
+            # follow the live job, not a newer refused or failed regather
+            run = conn.execute("SELECT * FROM runs WHERE id = ?", (job["run_id"],)).fetchone()
         view = {"title": podcast.episode_title(date), "run_at": settings.run_at.strftime("%-I:%M %p"),
-                "episode": None, "error": None, "stage": "starting", "feed_errors": []}
-        if force_generating or (run and run["status"] == "running"):
+                "ready_by": settings.ready_by.strftime("%-I:%M %p"), "worker": settings.worker_mode,
+                "episode": None, "error": None, "stage": "starting", "stage_label": "Starting", "minutes": 0,
+                "long": False, "feed_errors": []}
+        running = run is not None and run["status"] == "running"
+        if force_generating or running:
             view["state"] = "generating"
-            if run and run["status"] == "running":
-                view["stage"] = run["stage"]
+            if running:
+                stage = run["stage"]
+                minutes = max(0, int((now - datetime.fromisoformat(run["started_at"])).total_seconds() // 60))
+                stage_start = run["started_at"]
+                if job is not None and job["run_id"] == run["id"]:
+                    if stage == "writing" and job["claimed_at"]:
+                        stage_start = job["claimed_at"]
+                    elif stage in ("speaking", "publishing"):
+                        stage_start = job["updated_at"]
+                stage_minutes = (now - datetime.fromisoformat(stage_start)).total_seconds() // 60
+                past_ready = settings.worker_mode and now.astimezone(TZ).time() > settings.ready_by
+                label = STAGE_LABELS.get(stage, stage)
+                if stage == "writing":
+                    label = "Your Mac is writing" if settings.worker_mode else "Writing"
+                view.update(stage=stage, stage_label=label, minutes=minutes,
+                            long=(stage != "waiting" and stage_minutes > LONG_MINUTES)
+                            or (stage in ("waiting", "writing") and past_ready))
+            if episode:
+                view["episode"] = episode_view(episode)
         elif episode:
             view["state"] = "ready"
             view["episode"] = episode_view(episode)
             if run and run["status"] == "failed" and run["started_at"] > episode["updated_at"]:
                 view["error"] = run["error"]
+        elif job is not None and job["status"] == "missed":
+            view["state"] = "missed"
+            view["error"] = job["error"] or "the Mac worker didn't run"
+        elif settings.worker_mode and job is None and db.get_state(conn, "daily_missed_date") == date:
+            view["state"] = "missed"
+            view["error"] = "no stories were gathered"
         elif run and run["status"] == "failed":
             view["state"] = "failed"
             view["error"] = run["error"]

@@ -56,6 +56,8 @@ class Settings:
     fake_speech: bool = False
     claude_offline: bool = False
     daily_brief: bool = True
+    daily_mode: str = "api"
+    ready_by: time = time(8, 30)
     listener_location: str = "Minneapolis"
     worker_token: str = ""
     ntfy_topic: str = ""
@@ -82,6 +84,11 @@ class Settings:
     def music_dir(self) -> Path:
         return self.data_dir / "music"
 
+    @property
+    def worker_mode(self) -> bool:
+        """The daily brief is written by the Mac worker (DAILY_BRIEF=worker)."""
+        return self.daily_brief and self.daily_mode == "worker"
+
     @classmethod
     def from_env(cls, env=None) -> Settings:
         env = os.environ if env is None else env
@@ -103,6 +110,10 @@ class Settings:
         ntfy_server = env.get("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/")
         if not ntfy_server.startswith("https://"):
             raise ConfigError("NTFY_SERVER must be an https:// URL")
+        daily_raw = env.get("DAILY_BRIEF", "1").strip().lower()
+        daily_mode = {"0": "off", "1": "api", "api": "api", "worker": "worker"}.get(daily_raw)
+        if daily_mode is None:
+            raise ConfigError("DAILY_BRIEF must be 0, 1, api or worker")
         return cls(
             data_dir=Path(env.get("DATA_DIR", "data")),
             feed_token=token,
@@ -115,7 +126,9 @@ class Settings:
             feeds_path=Path(env.get("FEEDS_PATH", PROJECT_DIR / "feeds.yaml")),
             fake_speech=env.get("FAKE_SPEECH", "") == "1",
             claude_offline=env.get("CLAUDE_OFFLINE", "") == "1",
-            daily_brief=env.get("DAILY_BRIEF", "1") != "0",
+            daily_brief=daily_mode != "off",
+            daily_mode="api" if daily_mode == "off" else daily_mode,
+            ready_by=_parse_time(env.get("READY_BY", "08:30")),
             listener_location=env.get("LISTENER_LOCATION", "Minneapolis").strip() or "Minneapolis",
             worker_token=worker_token,
             ntfy_topic=ntfy_topic,

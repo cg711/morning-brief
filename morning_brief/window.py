@@ -7,14 +7,16 @@ from .models import Item
 
 DEFAULT_WINDOW = timedelta(hours=24)
 MAX_WINDOW = timedelta(hours=72)
+OVERLAP = timedelta(hours=2)
 _NON_WORD = re.compile(r"[^a-z0-9 ]")
 
 
 def window_start(previous_cutoff: datetime | None, now: datetime) -> datetime:
-    """Cover everything since the previous episode, but never more than 72 hours."""
+    """Cover everything since the previous episode, re-checking the last 2 hours (feeds sometimes add items
+    late, with earlier timestamps), but never more than 72 hours."""
     if previous_cutoff is None:
         return now - DEFAULT_WINDOW
-    return max(previous_cutoff, now - MAX_WINDOW)
+    return max(previous_cutoff - OVERLAP, now - MAX_WINDOW)
 
 
 def _normalize(title: str) -> str:

@@ -90,8 +90,8 @@ def test_happy_path_publishes_episode(conn, settings):
     assert titles == ["Introduction", "Story 0", "Story 1", "Wrap-up"]
 
 
-def test_window_starts_at_previous_episode_cutoff(conn, settings):
-    seed_episode(conn, settings, "2026-09-24", cutoff_at="2026-09-25T12:30:00+00:00")
+def test_window_starts_two_hours_before_previous_cutoff(conn, settings):
+    seed_episode(conn, settings, "2026-09-24", cutoff_at="2026-09-25T14:30:00+00:00")
     ids = [item_id(COUNCIL)]
     claude = FakeClaude([select_reply(ids), script_reply(ids)])
     pipeline.run_episode(deps_for(settings, claude), trigger="manual")
@@ -205,3 +205,19 @@ def test_publish_db_failure_with_no_previous_episode_leaves_no_file(conn, settin
     assert not (settings.audio_dir / "2026-09-25.mp3").exists()
     assert not (settings.audio_dir / "2026-09-25.mp3.bak").exists()
     assert not (settings.audio_dir / "2026-09-25.mp3.tmp").exists()
+
+
+def test_speak_and_store_publishes_with_given_sources(conn, settings):
+    rid = db.start_run(conn, date="2026-09-25", trigger="manual", model="mac-worker", started_at=NOW.isoformat())
+    script = {"intro": "Good morning.", "segments": [
+        {"segment": "headlines", "headline": "Storm", "text": " ".join(["word"] * 400), "item_ids": ["a1"]}],
+        "outro": "Bye."}
+    sources = [{"item_id": "a1", "source": "Wire", "title": "Storm", "url": "https://wire.test/storm",
+                "published_at": "2026-09-25T12:00:00+00:00"}]
+    pipeline.speak_and_store(settings, conn, rid, "2026-09-25", "2026-09-25T12:30:00+00:00", script, sources,
+                             speech.fake_synthesize, lambda: NOW)
+    ep = db.get_episode(conn, "2026-09-25")
+    assert ep["cutoff_at"] == "2026-09-25T12:30:00+00:00" and ep["word_count"] == 403
+    assert [s["url"] for s in db.episode_sources(conn, "2026-09-25")] == ["https://wire.test/storm"]
+    assert (settings.audio_dir / "2026-09-25.mp3").stat().st_size == ep["audio_bytes"]
+    assert db.latest_run(conn)["stage"] == "publishing"

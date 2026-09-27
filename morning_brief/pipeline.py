@@ -144,9 +144,19 @@ def _generate(deps: Deps, conn, run_id: int, episode_date: str, started: datetim
     db.set_stage(conn, run_id, "writing")
     script = writer.write_script(deps.claude, settings.model, stories, started, usage)
 
+    cited = {i for seg in script["segments"] for i in seg["item_ids"]}
+    sources = [{"item_id": it.id, "source": it.source, "title": it.title, "url": it.url,
+                "published_at": it.published_at.isoformat()} for it in candidates if it.id in cited]
+    speak_and_store(settings, conn, run_id, episode_date, started.isoformat(), script, sources,
+                    deps.synthesize, deps.now)
+
+
+def speak_and_store(settings: Settings, conn, run_id: int, episode_date: str, cutoff_at: str, script: dict,
+                    sources: list[dict], synthesize: Callable, now: Callable[[], datetime]) -> None:
+    """Speak a validated daily script (music + chapters) and publish it atomically. Shared by both modes."""
     db.set_stage(conn, run_id, "speaking")
-    audio = deps.synthesize(speech.script_passages(script), settings.voice, settings.models_dir,
-                            music.stings(settings, speech.SAMPLE_RATE))
+    audio = synthesize(speech.script_passages(script), settings.voice, settings.models_dir,
+                       music.stings(settings, speech.SAMPLE_RATE))
     duration = audio.duration
     mp3, _ = id3.try_tag(audio.mp3, title=podcast.episode_title(episode_date),
                          chapters=lambda: speech.script_chapters(script, audio.starts), duration=duration)
@@ -161,14 +171,11 @@ def _generate(deps: Deps, conn, run_id: int, episode_date: str, started: datetim
         backup.unlink(missing_ok=True)
         os.link(final, backup)
     os.replace(partial, final)
-    cited = {i for seg in script["segments"] for i in seg["item_ids"]}
     try:
         db.publish_episode(
-            conn, date=episode_date, cutoff_at=started.isoformat(), script_json=json.dumps(script),
+            conn, date=episode_date, cutoff_at=cutoff_at, script_json=json.dumps(script),
             word_count=writer.script_word_count(script), duration_s=duration, audio_bytes=len(mp3),
-            now=deps.now().isoformat(),
-            sources=[{"item_id": it.id, "source": it.source, "title": it.title, "url": it.url,
-                      "published_at": it.published_at.isoformat()} for it in candidates if it.id in cited],
+            now=now().isoformat(), sources=sources,
         )
     except Exception:
         if backup.exists():

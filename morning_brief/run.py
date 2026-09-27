@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from . import db, pipeline, speech
+from . import daily_worker, db, pipeline, speech
 from .config import Settings
 
 VOICE_SAMPLE = (
@@ -44,6 +44,13 @@ def main(argv: list[str] | None = None) -> int:
     if not settings.daily_brief:
         print("daily brief is off (DAILY_BRIEF=0); not calling the API")
         return 2
+
+    if settings.worker_mode:
+        if daily_worker.gather_run(settings, "cli") is None:
+            print("Nothing gathered; see the logs.")
+            return 1
+        print("Gathered today's stories; the Mac worker writes the brief.")
+        return 0
 
     deps = pipeline.default_deps(settings)
     try:

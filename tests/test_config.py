@@ -84,3 +84,17 @@ def test_cohost_voice_setting():
     assert Settings.from_env({"FEED_TOKEN": "x" * 32}).cohost_voice == "af_heart"
     assert Settings.from_env({"FEED_TOKEN": "x" * 32, "COHOST_VOICE": "bf_emma"}).cohost_voice == "bf_emma"
     assert Settings.from_env({"FEED_TOKEN": "x" * 32, "COHOST_VOICE": ""}).cohost_voice == "af_heart"
+
+
+@pytest.mark.parametrize("raw, brief, mode", [("0", False, "api"), ("1", True, "api"), ("api", True, "api"),
+                                              (" Worker ", True, "worker"), ("worker", True, "worker")])
+def test_daily_brief_modes(raw, brief, mode):
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32, "DAILY_BRIEF": raw})
+    assert (s.daily_brief, s.daily_mode, s.worker_mode) == (brief, mode, brief and mode == "worker")
+
+
+def test_daily_brief_invalid_and_ready_by():
+    with pytest.raises(ConfigError, match="DAILY_BRIEF must be 0, 1, api or worker"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "DAILY_BRIEF": "yes"})
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32}).ready_by == time(8, 30)
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32, "READY_BY": "09:05"}).ready_by == time(9, 5)

@@ -113,3 +113,17 @@ def test_phase3_schema(conn):
     assert {"source_url", "fact_check", "two_hosts"} <= topics
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(suggestions)")}
     assert cols == {"id", "topic", "reason", "from_topic_id", "status", "created_at"}
+
+
+def test_daily_jobs_table_and_interrupted_runs_skip_waiting_jobs(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(daily_jobs)")}
+    assert cols == {"date", "run_id", "status", "candidates_json", "bodies_json", "previous_json", "script_json",
+                    "cutoff_at", "claimed_at", "error", "created_at", "updated_at"}
+    waiting = db.start_run(conn, date="2026-09-25", trigger="schedule", model="mac-worker", started_at=NOW)
+    other = db.start_run(conn, date="2026-09-25", trigger="manual", model="m", started_at=NOW)
+    conn.execute("INSERT INTO daily_jobs (date, run_id, status, candidates_json, bodies_json, previous_json, "
+                 "cutoff_at, created_at, updated_at) VALUES ('2026-09-25', ?, 'waiting', '[]', '{}', '[]', ?, ?, ?)",
+                 (waiting, NOW, NOW, NOW))
+    assert db.fail_interrupted_runs(conn, NOW) == 1
+    status = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM runs")}
+    assert status == {waiting: "running", other: "failed"}

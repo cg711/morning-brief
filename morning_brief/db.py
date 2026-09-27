@@ -70,8 +70,10 @@ def finish_run(conn, run_id: int, status: str, finished_at: str, error: str | No
 
 
 def fail_interrupted_runs(conn, finished_at: str) -> int:
+    """Fail runs left 'running' by a restart — except worker-mode daily runs still waiting on the Mac."""
     cur = conn.execute(
-        "UPDATE runs SET status = 'failed', error = 'interrupted', finished_at = ? WHERE status = 'running'",
+        "UPDATE runs SET status = 'failed', error = 'interrupted', finished_at = ? WHERE status = 'running' "
+        "AND id NOT IN (SELECT run_id FROM daily_jobs WHERE status IN ('waiting', 'claimed'))",
         (finished_at,),
     )
     return cur.rowcount
