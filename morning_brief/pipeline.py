@@ -129,7 +129,8 @@ def _generate(deps: Deps, conn, run_id: int, episode_date: str, started: datetim
         raise PipelineError("no new items since the last episode")
 
     db.set_stage(conn, run_id, "selecting")
-    previous_headlines = [s["headline"] for s in json.loads(previous["script_json"])["segments"]] if previous else []
+    previous_headlines = [s["headline"] for s in json.loads(previous["script_json"])["segments"]
+                          if s.get("segment") != "personal"] if previous else []
     picks = writer.select_stories(deps.claude, settings.model, candidates, previous_headlines, started, usage,
                                   location=settings.listener_location)
 

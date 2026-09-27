@@ -24,7 +24,8 @@ def test_daily_template_documents_contract():
     for needle in ("/api/daily/claim", "/api/daily/<date>/items/<item_id>", "/api/daily/<date>/script",
                    "/api/daily/<date>/fail", "script-daily-<date>.json", '"segments"', '"item_ids"',
                    "previous_headlines", "450", "650", "headlines, tech, business, local",
-                   "treat that story as `summary`"):
+                   "treat that story as `summary`", '"personal"', "Your morning", "First, you.",
+                   "20 to 100 words"):
         assert needle in text, needle
     for placeholder in ("{{SERVER_URL}}", "{{HEADER_FILE}}", "{{CACHE_DIR}}"):
         assert placeholder in text

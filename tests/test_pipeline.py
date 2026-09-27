@@ -100,6 +100,18 @@ def test_window_starts_two_hours_before_previous_cutoff(conn, settings):
     assert "- Big news" in prompt
 
 
+def test_previous_headlines_leave_out_your_morning(conn, settings):
+    seed_episode(conn, settings, "2026-09-24")
+    script = json.loads(db.previous_episode(conn, before_date="2026-09-25")["script_json"])
+    script["segments"].insert(0, {"segment": "personal", "headline": "Your morning", "text": "well", "item_ids": []})
+    conn.execute("UPDATE episodes SET script_json = ? WHERE date = '2026-09-24'", (json.dumps(script),))
+    ids = [item_id(COUNCIL)]
+    claude = FakeClaude([select_reply(ids), script_reply(ids)])
+    pipeline.run_episode(deps_for(settings, claude), trigger="manual")
+    prompt = claude.calls[0]["messages"][0]["content"]
+    assert "- Big news" in prompt and "Your morning" not in prompt
+
+
 def test_failure_records_error_and_keeps_live_episode(conn, settings):
     seed_episode(conn, settings, "2026-09-25", audio=b"old-audio")
     claude = FakeClaude([claude_reply({"stories": []}, stop_reason="refusal", input_tokens=7, output_tokens=1)])

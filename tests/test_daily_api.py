@@ -72,6 +72,23 @@ def test_claim_stamps_worker_check_in(api):
     assert db.get_state(api.app.state.conn, "worker_last_seen") == NOW.isoformat()
 
 
+def test_script_route_allows_personal_only_with_personal_data(api, monkeypatch):
+    from morning_brief import personal as personal_mod
+    from tests.test_daily_worker import http as feeds_http, personal_seg
+    conn = api.app.state.conn
+    date = gathered(conn, api.app.state.settings)
+    api.post("/api/daily/claim", headers=AUTH)
+    news = script_for([item_id(COUNCIL)])
+    body = {**news, "segments": [personal_seg(), *news["segments"]]}
+    bad = api.post(f"/api/daily/{date}/script", json=body, headers=AUTH)
+    assert bad.status_code == 422 and any("no personal data" in p for p in bad.json()["problems"])
+    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now: {"tip": {"title": "t", "detail": "d"}})
+    api.post(f"/api/daily/{date}/fail", json={"reason": "retry"}, headers=AUTH)
+    date = daily_worker.gather(api.app.state.settings, conn, feeds_http(), NOW, "manual")  # re-gather with personal data
+    api.post("/api/daily/claim", headers=AUTH)
+    assert api.post(f"/api/daily/{date}/script", json=body, headers=AUTH).status_code == 202
+
+
 def test_restart_leaves_waiting_run_running_but_fails_speaking_job(settings):
     from morning_brief import db
     s = replace(settings, worker_token=WTOKEN, daily_mode="worker")

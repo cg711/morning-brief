@@ -14,7 +14,7 @@ from typing import Callable
 
 import httpx
 
-from . import articles, db, feeds, pipeline, retention, speech, window, writer
+from . import articles, db, feeds, personal, pipeline, retention, speech, window, writer
 from .config import TZ, Settings
 from .deepdives import _has_control_chars
 from .models import SEGMENTS
@@ -29,6 +29,9 @@ CLAIM_KEYS = ("id", "segment", "source", "published", "text", "title", "summary"
 ERROR_MAX = 500
 HEADLINE_MAX = 200
 MAX_PER_SEGMENT = 15
+PERSONAL = "personal"
+PERSONAL_HEADLINE = "Your morning"
+PERSONAL_MIN_WORDS, PERSONAL_MAX_WORDS = 20, 100
 _lock = threading.RLock()  # job transitions on the shared connection
 _gather_lock = threading.Lock()  # one gather at a time; independent of the Kokoro run_lock
 
@@ -89,7 +92,13 @@ def gather(settings: Settings, conn, http, now: datetime, trigger: str) -> str:
                        "published": writer._local(it.published_at), "published_at": it.published_at.isoformat(),
                        "text": _kind(it)} for it in chosen]
         bodies = {it.id: it.body for it in chosen if _kind(it) == "feed"}
-        headlines = [s["headline"] for s in json.loads(previous["script_json"])["segments"]] if previous else []
+        headlines = [s["headline"] for s in json.loads(previous["script_json"])["segments"]
+                     if s.get("segment") != PERSONAL] if previous else []
+        try:
+            facts = personal.gather_personal(settings, http, now)
+        except Exception:
+            log.exception("personal facts failed")
+            facts = None
         with _lock:
             old = get_job(conn, episode_date)
             if old is not None and old["status"] in ("claimed", "speaking"):
@@ -100,10 +109,10 @@ def gather(settings: Settings, conn, http, now: datetime, trigger: str) -> str:
                     db.finish_run(conn, old["run_id"], "failed", now.isoformat(), error="replaced by a new gather")
             conn.execute(
                 "INSERT OR REPLACE INTO daily_jobs (date, run_id, status, candidates_json, bodies_json, "
-                "previous_json, script_json, cutoff_at, claimed_at, error, created_at, updated_at) "
-                "VALUES (?, ?, 'waiting', ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)",
+                "previous_json, script_json, cutoff_at, claimed_at, error, created_at, updated_at, personal_json) "
+                "VALUES (?, ?, 'waiting', ?, ?, ?, NULL, ?, NULL, NULL, ?, ?, ?)",
                 (episode_date, run_id, json.dumps(candidates), json.dumps(bodies), json.dumps(headlines),
-                 now.isoformat(), now.isoformat(), now.isoformat()))
+                 now.isoformat(), now.isoformat(), now.isoformat(), json.dumps(facts) if facts else None))
             db.set_stage(conn, run_id, "waiting")
         return episode_date
     except Exception as exc:
@@ -167,6 +176,7 @@ def claim(conn, now: datetime, location: str) -> dict | None:
         "previous_headlines": json.loads(job["previous_json"]),
         "target_words": TARGET_WORDS,
         "candidates": [{k: c[k] for k in CLAIM_KEYS} for c in json.loads(job["candidates_json"])],
+        "personal": json.loads(job["personal_json"]) if job["personal_json"] else None,
     }
 
 
@@ -181,7 +191,7 @@ def known_ids(job) -> set[str]:
     return {c["id"] for c in json.loads(job["candidates_json"])}
 
 
-def validate_submission(script, known: set[str]) -> list[str]:
+def _validate_news(script, known: set[str]) -> list[str]:
     """Shape checks for a worker-written daily script, then the same rules as the API writer."""
     if not isinstance(script, dict):
         return ["the body must be a JSON object"]
@@ -218,14 +228,55 @@ def validate_submission(script, known: set[str]) -> list[str]:
     return writer.validate_script(script, known)
 
 
+def _personal_problems(seg: dict) -> list[str]:
+    problems = []
+    text = seg.get("text")
+    if not isinstance(text, str) or not text.strip():
+        problems.append("the personal segment needs non-empty 'text'")
+    elif _has_control_chars(text):
+        problems.append("the personal segment text contains control characters")
+    elif not PERSONAL_MIN_WORDS <= len(text.split()) <= PERSONAL_MAX_WORDS:
+        problems.append(f"the personal segment is {len(text.split())} words; it must be "
+                        f"{PERSONAL_MIN_WORDS} to {PERSONAL_MAX_WORDS}")
+    if seg.get("item_ids") not in (None, []):
+        problems.append("the personal segment must not cite item ids")
+    return problems
+
+
+def validate_submission(script, known: set[str], *, personal_allowed: bool = False) -> list[str]:
+    """An optional personal segment first (only when the claim had personal data), then the news segments, which
+    follow the same rules as the API writer. Personal words don't count toward the news word range."""
+    if not isinstance(script, dict):
+        return ["the body must be a JSON object"]
+    segments = script.get("segments")
+    problems: list[str] = []
+    if isinstance(segments, list):
+        positions = [n for n, s in enumerate(segments) if isinstance(s, dict) and s.get("segment") == PERSONAL]
+        if positions:
+            if not personal_allowed:
+                problems.append("there is no personal data today; remove the 'personal' segment")
+            elif positions != [0]:
+                problems.append("the 'personal' segment must be the first segment, and appear only once")
+            else:
+                problems += _personal_problems(segments[0])
+            script = {**script, "segments": [s for n, s in enumerate(segments) if n not in positions]}
+            return problems + [p.replace("segment ", "news segment ", 1) for p in _validate_news(script, known)]
+    return problems + _validate_news(script, known)
+
+
+def _clean_segment(seg: dict) -> dict:
+    if seg.get("segment") == PERSONAL:
+        return {"segment": PERSONAL, "headline": PERSONAL_HEADLINE, "text": seg.get("text"), "item_ids": []}
+    return {"segment": seg.get("segment"), "headline": seg.get("headline"),
+            "text": seg.get("text"), "item_ids": seg.get("item_ids")}
+
+
 def _clean_script(script: dict) -> dict:
     """Only the fields the app itself wrote and reads back — never the worker's raw dict verbatim."""
     return {
         "intro": script.get("intro"),
         "outro": script.get("outro"),
-        "segments": [{"segment": seg.get("segment"), "headline": seg.get("headline"),
-                      "text": seg.get("text"), "item_ids": seg.get("item_ids")}
-                     for seg in script.get("segments", [])],
+        "segments": [_clean_segment(seg) for seg in script.get("segments", [])],
     }
 
 

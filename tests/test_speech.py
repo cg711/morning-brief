@@ -122,3 +122,16 @@ def test_real_kokoro_with_music_and_chapters(tmp_path):
     path = tmp_path / "t.mp3"
     path.write_bytes(data)
     assert len(ID3(str(path)).getall("CHAP")) == 3 and audio.starts[0] > music.STING_S
+
+
+def test_script_chapters_with_a_personal_segment():
+    from morning_brief import daily_worker
+
+    script = {"intro": "Hi.", "outro": "Bye.", "segments": [
+        {"segment": "personal", "headline": "Morning", "text": "well", "item_ids": None},
+        {"segment": "headlines", "headline": "Storm hits coast", "text": "t", "item_ids": ["a"]},
+        {"segment": "local", "headline": "Council passes budget", "text": "t", "item_ids": ["b"]}]}
+    marks = speech.script_chapters(daily_worker._clean_script(script), [0.0, 5.0, 20.0, 40.0, 60.0])
+    assert [title for title, _ in marks] == ["Introduction", "Your morning", "Storm hits coast",
+                                             "Council passes budget", "Wrap-up"]
+    assert [start for _, start in marks] == [0.0, 5.0, 20.0, 40.0, 60.0]

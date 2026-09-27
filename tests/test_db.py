@@ -118,7 +118,7 @@ def test_phase3_schema(conn):
 def test_daily_jobs_table_and_interrupted_runs_skip_waiting_jobs(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(daily_jobs)")}
     assert cols == {"date", "run_id", "status", "candidates_json", "bodies_json", "previous_json", "script_json",
-                    "cutoff_at", "claimed_at", "error", "created_at", "updated_at"}
+                    "cutoff_at", "claimed_at", "error", "created_at", "updated_at", "personal_json"}
     waiting = db.start_run(conn, date="2026-09-25", trigger="schedule", model="mac-worker", started_at=NOW)
     other = db.start_run(conn, date="2026-09-25", trigger="manual", model="m", started_at=NOW)
     conn.execute("INSERT INTO daily_jobs (date, run_id, status, candidates_json, bodies_json, previous_json, "
