@@ -157,3 +157,44 @@ def test_long_running_job_survives_push_errors(conn, settings):
         raise RuntimeError("down")
 
     assert scheduler.long_running_job(conn, settings, lambda: NOW, exploding) == 0
+
+
+def test_worker_mode_jobs(conn, settings):
+    s = replace(settings, daily_mode="worker")
+    sched = scheduler.build(s, conn, lambda: NOW, lambda t: True)
+    jobs = {j.id: str(j.trigger) for j in sched.get_jobs()}
+    assert set(jobs) == {"daily", "ready_by", "prune", "long_running"}
+    assert "hour='8', minute='0'" in jobs["daily"] and "hour='8', minute='30'" in jobs["ready_by"]
+
+
+def test_worker_mode_catch_up_window(conn, settings):
+    from morning_brief import daily_worker
+    s = replace(settings, daily_mode="worker")
+    calls = []
+    start = lambda t: calls.append(t) or True
+    assert scheduler.catch_up(s, conn, lambda: NOW - timedelta(minutes=1), start) is False  # 7:59, before RUN_AT
+    assert scheduler.catch_up(s, conn, lambda: NOW + timedelta(minutes=31), start) is False  # 8:31, after READY_BY
+    assert scheduler.catch_up(s, conn, lambda: NOW + timedelta(minutes=10), start) is True and calls == ["catchup"]
+    from tests.test_daily_worker import gathered
+    gathered(conn, s)
+    assert scheduler.catch_up(s, conn, lambda: NOW + timedelta(minutes=10), start) is False  # job exists
+
+
+def test_start_background_run_in_worker_mode_gathers(settings, monkeypatch):
+    from morning_brief import daily_worker
+    import threading
+    done = threading.Event()
+    seen = []
+    monkeypatch.setattr(daily_worker, "gather_run", lambda s, trigger: seen.append(trigger) or done.set())
+    assert scheduler.start_background_run(replace(settings, daily_mode="worker"), "manual") is True
+    assert done.wait(2) and seen == ["manual"]
+
+
+def test_start_background_run_in_worker_mode_gathers_while_a_render_holds_the_run_lock(settings, monkeypatch):
+    from morning_brief import daily_worker, pipeline
+    import threading
+    done = threading.Event()
+    monkeypatch.setattr(pipeline, "is_running", lambda: True)
+    monkeypatch.setattr(daily_worker, "gather_run", lambda s, trigger: done.set())
+    assert scheduler.start_background_run(replace(settings, daily_mode="worker"), "schedule") is True
+    assert done.wait(2)

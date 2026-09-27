@@ -68,7 +68,7 @@ def test_generating_state_polls(client, app_conn):
     rid = db.start_run(app_conn, date="2026-09-25", trigger="schedule", model="m", started_at=NOW.isoformat())
     db.set_stage(app_conn, rid, "writing")
     html = client.get("/partials/today").text
-    assert 'hx-trigger="every 3s"' in html and "Generating: writing" in html
+    assert 'hx-trigger="every 3s"' in html and "Writing…" in html and "0 min" in html
 
 
 def test_failed_state_shows_error_and_feed_errors(client, app_conn):
@@ -199,3 +199,111 @@ def test_create_app_exposes_notifier(settings):
     custom = lambda *a: None
     app = create_app(settings, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False, notifier=custom)
     assert app.state.notifier is custom
+
+
+def worker_client(settings, clock):
+    app = create_app(replace(settings, daily_mode="worker"), clock=clock, start_run=lambda t: True,
+                     start_scheduler=False)
+    return TestClient(app)
+
+
+def test_worker_mode_waiting_and_stage_labels(settings):
+    from datetime import timedelta
+    with worker_client(settings, lambda: NOW - timedelta(minutes=30)) as c:
+        assert "Gathers at 8:00 AM; ready by 8:30 AM." in c.get("/").text
+        conn = c.app.state.conn
+        rid = db.start_run(conn, date="2026-09-25", trigger="schedule", model="mac-worker",
+                           started_at=(NOW - timedelta(minutes=40)).isoformat())
+        db.set_stage(conn, rid, "waiting")
+        html = c.get("/partials/today").text
+        assert "Waiting for your Mac" in html and "Run now" in html and "10 min" in html
+        assert "caution" not in html
+
+
+def test_worker_mode_amber_when_waiting_past_ready_by(settings):
+    from datetime import timedelta
+    with worker_client(settings, lambda: NOW + timedelta(minutes=35)) as c:
+        conn = c.app.state.conn
+        rid = db.start_run(conn, date="2026-09-25", trigger="schedule", model="mac-worker",
+                           started_at=NOW.isoformat())
+        db.set_stage(conn, rid, "waiting")
+        assert 'class="caution"' in c.get("/partials/today").text
+
+
+def test_long_running_stage_is_amber(client, app_conn):
+    from datetime import timedelta
+    rid = db.start_run(app_conn, date="2026-09-25", trigger="schedule", model="m",
+                       started_at=(NOW - timedelta(minutes=31)).isoformat())
+    db.set_stage(app_conn, rid, "speaking")
+    html = client.get("/partials/today").text
+    assert "Speaking…" in html and 'class="caution"' in html and "31 min" in html
+
+
+def test_player_stays_during_regenerate(client, app_conn, settings):
+    seed_episode(app_conn, settings, "2026-09-25")
+    rid = db.start_run(app_conn, date="2026-09-25", trigger="manual", model="m", started_at=NOW.isoformat())
+    db.set_stage(app_conn, rid, "fetching")
+    html = client.get("/partials/today").text
+    assert "Gathering stories…" in html and f'src="/audio/{TOKEN}/2026-09-25.mp3?v=' in html
+    version = int(datetime.fromisoformat(db.get_episode(app_conn, "2026-09-25")["updated_at"]).timestamp())
+    assert f'id="player-today-{version}" hx-preserve' in html
+    assert "Regenerate" not in html and "Transcript" in html
+
+
+def test_missed_state(settings):
+    from morning_brief import daily_worker
+    from tests.test_daily_worker import gathered
+    with worker_client(settings, lambda: NOW) as c:
+        conn = c.app.state.conn
+        gathered(conn, c.app.state.settings)
+        daily_worker.check_missed(c.app.state.settings, conn, NOW, lambda *a: None)
+        html = c.get("/partials/today").text
+        assert "No brief today: the Mac worker didn&#39;t run" in html and "Generate now" in html
+
+
+def test_worker_mode_amber_measures_time_in_the_writing_stage(settings):
+    from datetime import timedelta
+    from morning_brief import daily_worker
+    from tests.test_daily_worker import gathered
+    with worker_client(settings, lambda: NOW) as c:
+        conn = c.app.state.conn
+        gathered(conn, c.app.state.settings, NOW - timedelta(minutes=60))
+        daily_worker.claim(conn, NOW - timedelta(minutes=5), "Minneapolis")
+        html = c.get("/partials/today").text
+        assert "Your Mac is writing" in html and "60 min" in html and "caution" not in html
+
+
+def test_worker_mode_card_follows_the_live_job_run(settings):
+    from morning_brief import daily_worker
+    from tests.test_daily_worker import gathered
+    with worker_client(settings, lambda: NOW) as c:
+        conn = c.app.state.conn
+        gathered(conn, c.app.state.settings)
+        rid = db.start_run(conn, date="2026-09-25", trigger="manual", model=daily_worker.MODEL,
+                           started_at=NOW.isoformat())
+        db.finish_run(conn, rid, "failed", NOW.isoformat(), error="today's brief is already being written")
+        html = c.get("/partials/today").text
+        assert "Waiting for your Mac" in html and "Generation failed" not in html
+
+
+def test_worker_mode_missed_without_a_job(settings):
+    from morning_brief import daily_worker
+    with worker_client(settings, lambda: NOW) as c:
+        conn = c.app.state.conn
+        daily_worker.check_missed(c.app.state.settings, conn, NOW, lambda *a: None)
+        html = c.get("/partials/today").text
+        assert "No brief today: no stories were gathered" in html and "Generate now" in html
+
+
+def test_worker_mode_polls_slowly_while_waiting_or_writing(settings):
+    from datetime import timedelta
+    with worker_client(settings, lambda: NOW) as c:
+        conn = c.app.state.conn
+        rid = db.start_run(conn, date="2026-09-25", trigger="schedule", model="mac-worker",
+                           started_at=(NOW - timedelta(minutes=1)).isoformat())
+        db.set_stage(conn, rid, "waiting")
+        html = c.get("/partials/today").text
+        assert 'hx-trigger="every 20s"' in html and "every 3s" not in html
+        db.set_stage(conn, rid, "speaking")
+        html = c.get("/partials/today").text
+        assert 'hx-trigger="every 3s"' in html and "every 20s" not in html

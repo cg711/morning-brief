@@ -288,5 +288,6 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         return render_section(request)
 
     router.section_view = section_view
+    router.check_worker = check_worker
 
     return router

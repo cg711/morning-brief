@@ -98,9 +98,15 @@ The web page also shows when the Mac worker last checked in. The line turns ambe
 
 ## Daily brief (optional)
 
-Set `DAILY_BRIEF=1` and `ANTHROPIC_API_KEY` in `.env`. Pick your `LISTENER_LOCATION` and replace the `local` feeds in `feeds.yaml`, which default to Minneapolis. Episodes generate at `RUN_AT` (default 08:00) and retry at `RETRY_AT` if the first attempt fails.
+Two ways to have a daily ~5-minute news brief:
 
-Each run picks 6–8 stories. It uses full article text where the feed or `robots.txt`-permitted page provides it, and each story names its source out loud. The script is checked before speaking: 300–750 words, and every story must cite a real item.
+- **`DAILY_BRIEF=worker` (no API cost):** at `RUN_AT` the server gathers candidate stories from `feeds.yaml`. A second scheduled task on your Mac (`daily-brief-task.md` from `scripts/render_worker_prompt.py`) picks 6–8 stories, reads them and writes the script, and the server checks, speaks and publishes it.
+  - Run that task shortly after `RUN_AT`, with a retry before `READY_BY`. For example, cron `5,45 7,8 * * *` for `RUN_AT=07:30` and `READY_BY=08:30`.
+  - The Mac must be awake with the Claude app open. If there's no brief by `READY_BY`, you get an ntfy push instead.
+  - Regenerate re-gathers; press Run now on the daily task to write it straight away.
+- **`DAILY_BRIEF=1`:** the Anthropic API writes it at `RUN_AT` (retry at `RETRY_AT`), roughly $3–4 a month with Sonnet. Needs `ANTHROPIC_API_KEY`.
+
+Either way, pick your `LISTENER_LOCATION` and replace the `local` feeds in `feeds.yaml`, which default to Minneapolis. Each brief cites only stories from your feeds, names its sources out loud, and is checked before speaking: 300–750 words, and every story must cite a real item.
 
 ## Customizing
 

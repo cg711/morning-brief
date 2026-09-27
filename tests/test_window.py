@@ -10,7 +10,7 @@ def test_window_start_defaults_to_24h():
 
 def test_window_start_uses_previous_cutoff():
     prev = NOW - timedelta(hours=20)
-    assert window_start(prev, NOW) == prev
+    assert window_start(prev, NOW) == prev - timedelta(hours=2)
 
 
 def test_window_start_capped_at_72h():
@@ -31,3 +31,9 @@ def test_select_window_dedupes_by_title_and_id():
     same_title = make_item("x2", title="Storm hits coast!", source="BBC", published_at=NOW - timedelta(hours=3))
     same_id = make_item("x1", title="Different headline", published_at=NOW - timedelta(hours=4))
     assert [i.id for i in select_window([same_title, same_id, first], start)] == ["x1"]
+
+
+def test_window_start_overlaps_previous_cutoff_by_two_hours():
+    prev = NOW - timedelta(hours=20)
+    assert window_start(prev, NOW) == prev - timedelta(hours=2)
+    assert window_start(NOW - timedelta(hours=71), NOW) == NOW - timedelta(hours=72)  # still capped
