@@ -74,10 +74,15 @@ Apps that fetch feeds from their own servers can't reach a tailnet address; Over
 3. Add the printed permission rules to `~/.claude/settings.json` under `permissions.allow`. They let the unattended hourly run search and read the web and talk only to your server, without stopping for approval.
 4. In the Claude desktop app, create a scheduled task that runs hourly, with the contents of `worker/deep-dive-task.md`. Queue a topic in the web UI and press **Run now** once to check it end to end.
 
+After updating morning-brief, re-run scripts/render_worker_prompt.py and paste the new worker/deep-dive-task.md into your scheduled task: new features like links, fact-checking and two hosts need the updated prompt. Update the scheduled task before ticking Fact-check or Two hosts on any topic. An older prompt can't produce those formats: such topics fail, or claim a fact-check that never ran.
+
 How it behaves:
 - The worker runs whenever the Claude app is open. It keeps up to **3 unheard episodes** ready.
 - **Mark heard** frees a slot, and so does waiting 7 days. Heard episodes are deleted after 30 days.
 - An idle hourly check is a single request, so it costs next to nothing.
+- **From a link:** paste a URL into the Link field. The topic is optional, and the worker builds the episode around that page.
+- **Fact-check pass** and **Two hosts** are checkboxes on each topic. The "New topics default to" switches set their starting state. A fact-check costs roughly 30–50% more of your Claude usage per episode. Two-host episodes use `VOICE` for the host and `COHOST_VOICE` (default `af_heart`) for the co-host.
+- **Suggested topics:** each episode proposes up to 3 related topics. Add or dismiss them from the page.
 
 ## Notifications (optional)
 
@@ -102,6 +107,7 @@ Each run picks 6–8 stories. It uses full article text where the feed or `robot
 | Setting | Where | Notes |
 |---|---|---|
 | Voice | `VOICE` in `.env` | Any Kokoro voice (`am_michael`, `af_heart`, `af_bella`, `bf_emma`, …) |
+| Co-host voice | `COHOST_VOICE` in `.env` | Used by two-host episodes (default `af_heart`) |
 | Speaking pace | `SPEED` in `morning_brief/speech.py` | Default 1.1× |
 | Intro/outro music | `data/music/intro.wav`, `outro.wav`; `MUSIC=0` | A generated sting by default. Your own PCM WAVs, up to 30 s, replace it |
 | News sources | `feeds.yaml` | Grouped by segment: `headlines`, `tech`, `business`, `local` |

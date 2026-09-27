@@ -5,12 +5,22 @@
 
   <form class="card add-topic" hx-post="/deep-dives" hx-target="#deep-dives" hx-swap="outerHTML">
     <label for="dd-topic">Topic</label>
-    <input id="dd-topic" name="topic" required maxlength="200" placeholder="How the Federal Reserve came to be">
+    <input id="dd-topic" name="topic" maxlength="200" placeholder="How the Federal Reserve came to be (optional with a link)">
+    <label for="dd-url">Link (optional)</label>
+    <input id="dd-url" name="url" type="url" maxlength="2000" placeholder="https://…">
     <label for="dd-notes">Angle or notes (optional)</label>
     <textarea id="dd-notes" name="notes" maxlength="500" rows="2" placeholder="Focus on the 2008 crisis"></textarea>
+    <div class="checks">
+      <label><input type="checkbox" name="fact_check" value="1"{% if dd.defaults.fact_check %} checked{% endif %}> Fact-check pass</label>
+      <label><input type="checkbox" name="two_hosts" value="1"{% if dd.defaults.two_hosts %} checked{% endif %}> Two hosts</label>
+    </div>
     {% if dd.error %}<p class="warn small">{{ dd.error }}</p>{% endif %}
     <div class="actions"><button type="submit">Add to queue</button></div>
   </form>
+  <p class="defaults muted small">New topics default to:
+    <label><input type="checkbox" name="value" value="1" hx-post="/deep-dives/defaults" hx-trigger="change" hx-vals='{"key": "fact_check"}' hx-target="#deep-dives" hx-swap="outerHTML"{% if dd.defaults.fact_check %} checked{% endif %}> fact-check</label>
+    <label><input type="checkbox" name="value" value="1" hx-post="/deep-dives/defaults" hx-trigger="change" hx-vals='{"key": "two_hosts"}' hx-target="#deep-dives" hx-swap="outerHTML"{% if dd.defaults.two_hosts %} checked{% endif %}> two hosts</label>
+  </p>
 
   {% for ep in dd.ready %}
     <article class="card deep-ready">
@@ -31,6 +41,7 @@
         {% if t.status == "researching" %}Researching on your Mac{% else %}Speaking on the server{% endif %}
         · {{ t.topic }} · {{ t.minutes }} min{% if t.long %} · <span class="caution">running long</span>{% endif %}</p>
       {% if t.parent_title %}<p class="muted small">Follow-up to {{ t.parent_title }}</p>{% endif %}
+      {% include "partials/topic_meta.html" %}
     </div>
   {% endfor %}
 
@@ -39,7 +50,7 @@
     <ol class="queue">
       {% for t in dd.queued %}
         <li class="card">
-          <div><strong>{{ t.topic }}</strong>{% if t.parent_title %}<p class="muted small">Follow-up to {{ t.parent_title }}</p>{% elif t.notes %}<p class="muted small">{{ t.notes }}</p>{% endif %}</div>
+          <div><strong>{{ t.topic }}</strong>{% if t.parent_title %}<p class="muted small">Follow-up to {{ t.parent_title }}</p>{% elif t.notes %}<p class="muted small">{{ t.notes }}</p>{% endif %}{% include "partials/topic_meta.html" %}</div>
           <div class="actions">
             {% if not loop.first %}<button hx-post="/deep-dives/{{ t.id }}/top" hx-target="#deep-dives" hx-swap="outerHTML">Move to top</button>{% endif %}
             <button class="danger" hx-delete="/deep-dives/{{ t.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Remove this topic?">Delete</button>
@@ -49,11 +60,30 @@
     </ol>
   {% endif %}
 
+  {% if dd.suggestions %}
+    <h3 class="sub">Suggested topics</h3>
+    <ul class="suggestions">
+      {% for s in dd.suggestions %}
+        <li class="card">
+          <div><strong>{{ s.topic }}</strong>
+            {% if s.reason %}<p class="muted small">{{ s.reason }}</p>{% endif %}
+            {% if s.from_title %}<p class="muted small">from {{ s.from_title }}</p>{% endif %}
+          </div>
+          <div class="actions">
+            <button hx-post="/suggestions/{{ s.id }}/add" hx-target="#deep-dives" hx-swap="outerHTML">Add</button>
+            <button hx-post="/suggestions/{{ s.id }}/dismiss" hx-target="#deep-dives" hx-swap="outerHTML">Dismiss</button>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
   {% for t in dd.failed %}
     <div class="card">
       <p><strong>{{ t.topic }}</strong></p>
       {% if t.parent_title %}<p class="muted small">Follow-up to {{ t.parent_title }}</p>{% endif %}
       <p class="warn small">Failed: {{ t.error }}</p>
+      {% include "partials/topic_meta.html" %}
       <div class="actions">
         <button hx-post="/deep-dives/{{ t.id }}/retry" hx-target="#deep-dives" hx-swap="outerHTML">Retry</button>
         <button class="danger" hx-delete="/deep-dives/{{ t.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this topic?">Delete</button>

@@ -106,3 +106,10 @@ def test_phase2_columns(conn):
     dd = {r["name"] for r in conn.execute("PRAGMA table_info(deep_dives)")}
     topics = {r["name"] for r in conn.execute("PRAGMA table_info(topics)")}
     assert "chapters_json" in dd and {"parent_topic_id", "parent_section"} <= topics
+
+
+def test_phase3_schema(conn):
+    topics = {r["name"] for r in conn.execute("PRAGMA table_info(topics)")}
+    assert {"source_url", "fact_check", "two_hosts"} <= topics
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(suggestions)")}
+    assert cols == {"id", "topic", "reason", "from_topic_id", "status", "created_at"}

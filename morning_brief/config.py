@@ -48,6 +48,7 @@ class Settings:
     feed_token: str
     model: str = "claude-sonnet-5"
     voice: str = "am_michael"
+    cohost_voice: str = "af_heart"
     run_at: time = time(8, 0)
     retry_at: time = time(8, 30)
     public_base_url: str = "http://localhost:8430"
@@ -107,6 +108,7 @@ class Settings:
             feed_token=token,
             model=env.get("MODEL", "claude-sonnet-5"),
             voice=env.get("VOICE", "am_michael"),
+            cohost_voice=env.get("COHOST_VOICE", "af_heart").strip() or "af_heart",
             run_at=_parse_time(env.get("RUN_AT", "08:00")),
             retry_at=_parse_time(env.get("RETRY_AT", "08:30")),
             public_base_url=env.get("PUBLIC_BASE_URL", "http://localhost:8430").rstrip("/"),

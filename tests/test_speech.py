@@ -81,6 +81,23 @@ def test_speed_is_user_choice():
     assert speech.SPEED == 1.1
 
 
+def test_fake_synthesize_dialogue_passage(tmp_path):
+    passages = ["word " * 12, [("am_michael", "word " * 24), ("af_heart", "word " * 12)]]
+    audio = speech.fake_synthesize(passages, "am_michael", tmp_path)
+    # 5 s + 0.6 pause, then 10 s + 0.25 line pause + 5 s
+    assert audio.starts == pytest.approx([0.0, 5.6])
+    assert audio.duration == pytest.approx(5.6 + 10.0 + 0.25 + 5.0)
+
+
+@pytest.mark.container
+def test_real_kokoro_two_voices():
+    models = Path(os.environ.get("MODELS_DIR", "/srv/data/models"))
+    one = speech.synthesize(["Hello there, and welcome."], "am_michael", models)
+    both = speech.synthesize([[("am_michael", "Hello there, and welcome."), ("af_heart", "Thanks, glad to be here.")]],
+                             "am_michael", models)
+    assert is_mp3(both.mp3) and both.duration > one.duration + 1.0 and both.starts == [0.0]
+
+
 @pytest.mark.container
 def test_real_kokoro_speaks():
     models = Path(os.environ.get("MODELS_DIR", "/srv/data/models"))

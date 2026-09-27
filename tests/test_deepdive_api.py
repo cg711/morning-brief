@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from morning_brief import db, deepdives
 from morning_brief.app import create_app
-from tests.helpers import NOW, deep_dive_script
+from tests.helpers import NOW, deep_dive_script, two_host_script
 
 WTOKEN = "w" * 40
 FEED = "t" * 40
@@ -52,8 +52,17 @@ def test_claim_flow(api):
     assert api.post("/api/deep-dives/claim", headers=AUTH).status_code == 204
     ids = queue(api, "A", "B", "C", "D")
     got = [api.post("/api/deep-dives/claim", headers=AUTH).json() for _ in range(3)]
-    assert [g["id"] for g in got] == ids[:3] and got[0] == {"id": ids[0], "topic": "A", "notes": ""}
+    assert [g["id"] for g in got] == ids[:3] and got[0] == {"id": ids[0], "topic": "A", "notes": "",
+                                                            "url": None, "fact_check": False, "two_hosts": False}
     assert api.post("/api/deep-dives/claim", headers=AUTH).status_code == 204
+
+
+def test_claim_returns_link_and_flags(api):
+    conn = api.app.state.conn
+    t = deepdives.add_topic(conn, "", "", NOW, url="https://example.com/story", fact_check=True, two_hosts=True)
+    got = api.post("/api/deep-dives/claim", headers=AUTH).json()
+    assert got == {"id": t, "topic": "From link: example.com/story", "notes": "",
+                   "url": "https://example.com/story", "fact_check": True, "two_hosts": True}
 
 
 def test_submit_script(api, rendered):
@@ -129,3 +138,21 @@ def test_worker_calls_record_check_in(api):
     assert db.get_state(conn, "worker_last_seen") is None
     assert api.post("/api/deep-dives/claim", headers=AUTH).status_code == 204  # idle claim still counts
     assert db.get_state(conn, "worker_last_seen") == NOW.isoformat()
+
+
+def test_submit_validates_against_the_topics_flags(api, rendered):
+    conn = api.app.state.conn
+    t = deepdives.add_topic(conn, "Fed", "", NOW, two_hosts=True, fact_check=True)
+    api.post("/api/deep-dives/claim", headers=AUTH)
+    single = api.post(f"/api/deep-dives/{t}/script", json=deep_dive_script(), headers=AUTH)
+    assert single.status_code == 422
+    problems = single.json()["problems"]
+    assert any("must use 'lines'" in p for p in problems) and any("'fact_check'" in p for p in problems)
+    ok = api.post(f"/api/deep-dives/{t}/script",
+                  json={**two_host_script(), "fact_check": {"claims_checked": 9, "corrected": 1, "removed": 0}},
+                  headers=AUTH)
+    assert ok.status_code == 202 and rendered == [t]
+
+
+def test_submit_for_unknown_topic_is_404(api):
+    assert api.post("/api/deep-dives/999/script", json=deep_dive_script(), headers=AUTH).status_code == 404

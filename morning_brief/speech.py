@@ -18,6 +18,7 @@ SAMPLE_RATE = 24000
 SEGMENT_PAUSE_S = 0.6
 INTRO_GAP_S = 0.3
 OUTRO_GAP_S = 0.6
+LINE_PAUSE_S = 0.25
 BITRATE_KBPS = 64
 SPEED = 1.1  # user-chosen pace (~146 wpm); 1.0 ran 666 words to 5:01
 FAKE_WORDS_PER_SECOND = 2.4
@@ -41,6 +42,18 @@ class Audio(NamedTuple):
     mp3: bytes
     duration: float        # seconds
     starts: list[float]    # start second of each passage in the final audio
+
+
+Line = tuple[str, str]  # (voice, text): one turn of a two-host dialogue
+
+
+def _join_lines(parts: list[np.ndarray], sample_rate: int) -> np.ndarray:
+    out = []
+    for n, part in enumerate(parts):
+        if n:
+            out.append(_silence(LINE_PAUSE_S, sample_rate))
+        out.append(part.astype(np.float32, copy=False))
+    return np.concatenate(out)
 
 
 def _silence(seconds: float, sample_rate: int) -> np.ndarray:
@@ -107,7 +120,8 @@ def ensure_models(models_dir: Path, fetch=_fetch) -> tuple[Path, Path]:
     return paths[0], paths[1]
 
 
-def synthesize(passages: list[str], voice: str, models_dir: Path, music: Music | None = None) -> Audio:
+def synthesize(passages: list[str | list[Line]], voice: str, models_dir: Path,
+               music: Music | None = None) -> Audio:
     """Speak each passage with Kokoro, lay it out with pauses (and music), encode MP3. The model is loaded
     only for this call."""
     from kokoro_onnx import Kokoro  # heavy import; espeak fails on macOS, so only the container gets here
@@ -116,8 +130,15 @@ def synthesize(passages: list[str], voice: str, models_dir: Path, music: Music |
     kokoro = Kokoro(str(model), str(voices))
     try:
         chunks, sample_rate = [], SAMPLE_RATE
-        for text in passages:
-            audio, sample_rate = kokoro.create(text, voice=voice, speed=SPEED, lang="en-us")
+        for passage in passages:
+            if isinstance(passage, str):
+                audio, sample_rate = kokoro.create(passage, voice=voice, speed=SPEED, lang="en-us")
+            else:
+                parts = []
+                for line_voice, text in passage:
+                    line_audio, sample_rate = kokoro.create(text, voice=line_voice, speed=SPEED, lang="en-us")
+                    parts.append(line_audio)
+                audio = _join_lines(parts, sample_rate)
             chunks.append(audio)
     finally:
         del kokoro
@@ -128,9 +149,14 @@ def synthesize(passages: list[str], voice: str, models_dir: Path, music: Music |
     return Audio(encode_mp3(samples, sample_rate), len(samples) / sample_rate, starts)
 
 
-def fake_synthesize(passages: list[str], voice: str, models_dir: Path, music: Music | None = None) -> Audio:
+def _fake_speech(text: str) -> np.ndarray:
+    return np.zeros(int(SAMPLE_RATE * max(0.5, len(text.split()) / FAKE_WORDS_PER_SECOND)), dtype=np.float32)
+
+
+def fake_synthesize(passages: list[str | list[Line]], voice: str, models_dir: Path,
+                    music: Music | None = None) -> Audio:
     """Silent speech sized like the real thing, laid out like the real thing. For development on macOS."""
-    chunks = [np.zeros(int(SAMPLE_RATE * max(0.5, len(p.split()) / FAKE_WORDS_PER_SECOND)), dtype=np.float32)
+    chunks = [_fake_speech(p) if isinstance(p, str) else _join_lines([_fake_speech(t) for _, t in p], SAMPLE_RATE)
               for p in passages]
     samples, starts = assemble(chunks, SAMPLE_RATE, music)
     return Audio(encode_mp3(samples, SAMPLE_RATE), len(samples) / SAMPLE_RATE, starts)

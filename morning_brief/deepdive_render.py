@@ -65,7 +65,8 @@ def _render_locked(settings: Settings, conn, topic_id: int, synthesize: Callable
         return "gone"
     final = deepdives.audio_path(settings.deep_dives_dir, topic_id)
     try:
-        audio = synthesize(deepdives.passages(script), settings.voice, settings.models_dir,
+        audio = synthesize(deepdives.passages(script, host_voice=settings.voice, cohost_voice=settings.cohost_voice),
+                           settings.voice, settings.models_dir,
                            music_mod.stings(settings, speech.SAMPLE_RATE))
         duration = audio.duration
         mp3, marks = id3.try_tag(audio.mp3, title=script["title"],

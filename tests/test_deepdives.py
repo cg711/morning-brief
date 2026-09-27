@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 
 from morning_brief import deepdives
-from tests.helpers import NOW, deep_dive_script
+from tests.helpers import NOW, deep_dive_script, two_host_script
 
 
 def add(conn, n=1):
@@ -14,7 +14,7 @@ def test_add_topic_validates_and_orders(conn):
     a, b = add(conn, 2)
     assert [r["id"] for r in deepdives.list_topics(conn)] == [a, b]
     assert deepdives.get_topic(conn, a)["status"] == "queued"
-    with pytest.raises(deepdives.TopicError, match="required"):
+    with pytest.raises(deepdives.TopicError, match="enter a topic or a link"):
         deepdives.add_topic(conn, "   ", "", NOW)
     with pytest.raises(deepdives.TopicError, match="200"):
         deepdives.add_topic(conn, "x" * 201, "", NOW)
@@ -256,6 +256,17 @@ def test_passages_order():
     assert out[-1] == "Thanks for listening." and len(out) == 6
 
 
+def test_passages_map_speakers_to_voices():
+    script = two_host_script(sections=3)
+    out = deepdives.passages(script, host_voice="H", cohost_voice="C")
+    assert out[0] == "Morning Brief deep dive: How the Fed Began." and out[1] == script["intro"]
+    lines = script["sections"][0]["lines"]
+    assert out[2] == [("H", "Part 1."), ("H", lines[0]["text"]), ("C", lines[1]["text"])]
+    assert out[-1] == script["outro"] and len(out) == 6
+    single = deepdives.passages(deep_dive_script(sections=3), host_voice="H", cohost_voice="C")
+    assert all(isinstance(p, str) for p in single)
+
+
 def test_control_char_in_title_is_a_problem():
     script = deep_dive_script(title="Bad\x0btitle")
     assert any("contains control characters" in p for p in deepdives.validate_script(script))
@@ -426,3 +437,178 @@ def test_deleting_parent_keeps_child(conn, settings):
     deepdives.delete_topic(conn, settings.deep_dives_dir, parent)
     row = deepdives.get_topic(conn, child)
     assert row is not None and row["parent_topic_id"] is None
+
+
+LINK = "https://www.nytimes.com/2026/09/25/business/fed-rates.html"
+
+
+def test_link_only_topic_gets_placeholder(conn):
+    t = deepdives.add_topic(conn, "  ", "", NOW, url=f"  {LINK} ")
+    row = deepdives.get_topic(conn, t)
+    assert row["topic"] == "From link: nytimes.com/2026/09/25/business/fed-rates.html"
+    assert row["source_url"] == LINK
+
+
+def test_link_with_topic_keeps_topic_and_flags(conn):
+    t = deepdives.add_topic(conn, "Rate cuts", "", NOW, url=LINK, fact_check=True, two_hosts=True)
+    row = deepdives.get_topic(conn, t)
+    assert (row["topic"], row["source_url"], row["fact_check"], row["two_hosts"]) == ("Rate cuts", LINK, 1, 1)
+    plain = deepdives.get_topic(conn, deepdives.add_topic(conn, "Plain", "", NOW))
+    assert (plain["source_url"], plain["fact_check"], plain["two_hosts"]) == (None, 0, 0)
+
+
+def test_topic_or_link_required(conn):
+    with pytest.raises(deepdives.TopicError, match="enter a topic or a link"):
+        deepdives.add_topic(conn, " ", "", NOW)
+
+
+@pytest.mark.parametrize("bad", ["ftp://x.com/a", "https://", "https://exa mple.com/", "not a url",
+                                 "https://x.com/" + "a" * 2000, "https://x.com/\x07", "http://[::1",
+                                 "https://:80/x"])
+def test_bad_links_rejected(conn, bad):
+    with pytest.raises(deepdives.TopicError, match="the link must be a full http"):
+        deepdives.add_topic(conn, "T", "", NOW, url=bad)
+
+
+def test_link_strips_userinfo_from_display(conn):
+    t = deepdives.add_topic(conn, "", "", NOW, url="https://user:pw@example.com/a")
+    row = deepdives.get_topic(conn, t)
+    assert row["topic"] == "From link: example.com/a"
+
+
+def test_link_scheme_case_insensitive_and_host_lowercased(conn):
+    t = deepdives.add_topic(conn, "", "", NOW, url="HTTPS://Example.com/Story")
+    row = deepdives.get_topic(conn, t)
+    assert row["topic"] == "From link: example.com/Story"
+    assert row["source_url"] == "HTTPS://Example.com/Story"  # stored as given, stripped
+
+
+def test_defaults_round_trip(conn):
+    assert deepdives.get_defaults(conn) == {"fact_check": False, "two_hosts": False}
+    deepdives.set_default(conn, "two_hosts", True)
+    assert deepdives.get_defaults(conn) == {"fact_check": False, "two_hosts": True}
+    deepdives.set_default(conn, "two_hosts", False)
+    assert deepdives.get_defaults(conn)["two_hosts"] is False
+    with pytest.raises(ValueError):
+        deepdives.set_default(conn, "music", True)
+
+
+def test_follow_up_uses_defaults(conn):
+    parent = _published(conn)
+    deepdives.set_default(conn, "fact_check", True)
+    deepdives.set_default(conn, "two_hosts", True)
+    row = deepdives.get_topic(conn, deepdives.add_follow_up(conn, parent, 0, NOW))
+    assert (row["fact_check"], row["two_hosts"]) == (1, 1)
+
+
+FC = {"claims_checked": 12, "corrected": 2, "removed": 1}
+
+
+def test_two_host_script_is_valid_only_for_two_host_topics():
+    assert deepdives.validate_script(two_host_script(), two_hosts=True) == []
+    assert any("uses 'lines'" in p for p in deepdives.validate_script(two_host_script()))
+    assert any("must use 'lines'" in p for p in deepdives.validate_script(deep_dive_script(), two_hosts=True))
+
+
+def test_two_host_mismatch_message_hints_stale_prompt():
+    problems = deepdives.validate_script(deep_dive_script(), two_hosts=True)
+    assert any("must use 'lines'" in p and "(is the worker prompt up to date?)" in p for p in problems)
+
+
+def test_lines_count_toward_words():
+    assert deepdives.script_word_count(two_host_script(2400)) == 2400
+    assert deepdives.section_text({"lines": [{"speaker": "host", "text": "a b"}, {"speaker": "cohost", "text": "c"}]}) == "a b c"
+    assert deepdives.section_text({"text": "x y"}) == "x y"
+
+
+def test_line_problems():
+    both = two_host_script()
+    for s in both["sections"]:
+        for line in s["lines"]:
+            line["speaker"] = "host"
+    assert any("both 'host' and 'cohost'" in p for p in deepdives.validate_script(both, two_hosts=True))
+    bad = two_host_script()
+    bad["sections"][0]["lines"][0]["speaker"] = "guest"
+    bad["sections"][1]["lines"][1]["text"] = "  "
+    bad["sections"][2]["lines"] = []
+    problems = deepdives.validate_script(bad, two_hosts=True)
+    assert any("section 1 line 1" in p and "'host' or 'cohost'" in p for p in problems)
+    assert any("section 2 line 2" in p and "non-empty" in p for p in problems)
+    assert any("section 3" in p and "non-empty list" in p for p in problems)
+    many = two_host_script()
+    many["sections"][0]["lines"] = [{"speaker": "host", "text": "word"}] * 81
+    assert any("81 lines" in p for p in deepdives.validate_script(many, two_hosts=True))
+
+
+def test_fact_check_summary_required_when_requested():
+    script = deep_dive_script()
+    assert any("'fact_check'" in p for p in deepdives.validate_script(script, fact_check=True))
+    assert deepdives.validate_script({**script, "fact_check": FC}, fact_check=True) == []
+    for bad in ({**FC, "corrected": True}, {**FC, "claims_checked": 0}, {**FC, "removed": -1},
+                {"claims_checked": 3, "corrected": 2, "removed": 2}, {"claims_checked": 3}):
+        assert any("'fact_check'" in p for p in deepdives.validate_script({**script, "fact_check": bad},
+                                                                          fact_check=True)), bad
+    assert deepdives.validate_script({**script, "fact_check": "junk"}) == []  # ignored when not requested
+
+
+def test_fact_check_missing_message_hints_stale_prompt():
+    problems = deepdives.validate_script(deep_dive_script(), fact_check=True)
+    assert any("must be an object with claims_checked" in p and "(is the worker prompt up to date?)" in p
+               for p in problems)
+
+
+def test_follow_up_on_two_host_episode(conn):
+    t = deepdives.add_topic(conn, "Fed", "", NOW, two_hosts=True)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, two_host_script(), NOW)
+    deepdives.publish(conn, t, title="How the Fed Began", word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    child = deepdives.get_topic(conn, deepdives.add_follow_up(conn, t, 0, NOW))
+    assert child["topic"] == "Part 1" and "already covered: word word" in child["notes"]
+
+
+def test_clean_suggestions():
+    assert deepdives.clean_suggestions(None) == []
+    assert deepdives.clean_suggestions("x") == []
+    raw = [{"topic": "  The Panic of 1907 ", "reason": " Came up twice. "}, "junk", {"topic": ""},
+           {"topic": "X" * 201}, {"topic": "Ok", "reason": 5}, {"topic": "Bad\x07"},
+           {"topic": "Second"}, {"topic": "Third", "reason": "r" * 400}, {"topic": "Fourth"}]
+    assert deepdives.clean_suggestions(raw) == [
+        {"topic": "The Panic of 1907", "reason": "Came up twice."},
+        {"topic": "Second", "reason": ""},
+        {"topic": "Third", "reason": "r" * 300},
+    ]
+
+
+def _accepted_with_suggestions(conn, suggestions, topic="Fed"):
+    t = deepdives.add_topic(conn, topic, "", NOW)
+    deepdives.move_to_top(conn, t, NOW)  # so claim() picks this topic even if others are queued
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, {**deep_dive_script(), "suggestions": suggestions}, NOW)
+    return t
+
+
+def test_accept_stores_suggestions_without_duplicates(conn):
+    deepdives.add_topic(conn, "Already Queued", "", NOW)
+    first = _accepted_with_suggestions(conn, [{"topic": "The Panic of 1907", "reason": "r1"},
+                                              {"topic": "already queued"}, {"topic": "FED"}])
+    assert [(s["topic"], s["reason"]) for s in deepdives.list_suggestions(conn)] == [("The Panic of 1907", "r1")]
+    _accepted_with_suggestions(conn, [{"topic": "the panic of 1907"}, {"topic": "Bretton Woods"}], topic="Gold")
+    assert [s["topic"] for s in deepdives.list_suggestions(conn)] == ["Bretton Woods", "The Panic of 1907"]
+    row = conn.execute("SELECT from_topic_id, status FROM suggestions WHERE topic = 'The Panic of 1907'").fetchone()
+    assert (row["from_topic_id"], row["status"]) == (first, "new")
+
+
+def test_add_and_dismiss_suggestions(conn):
+    deepdives.set_default(conn, "two_hosts", True)
+    _accepted_with_suggestions(conn, [{"topic": "A", "reason": "why a"}, {"topic": "B"}])
+    other = deepdives.add_topic(conn, "Queued earlier", "", NOW)
+    a, b = sorted(deepdives.list_suggestions(conn), key=lambda s: s["topic"])
+    new_id = deepdives.add_suggestion(conn, a["id"], NOW)
+    row = deepdives.get_topic(conn, new_id)
+    assert (row["topic"], row["notes"], row["two_hosts"], row["fact_check"]) == ("A", "why a", 1, 0)
+    queued = [r["id"] for r in deepdives.list_topics(conn) if r["status"] == "queued"]
+    assert queued == [other, new_id]  # end of the queue
+    assert deepdives.add_suggestion(conn, a["id"], NOW) is None
+    assert deepdives.dismiss_suggestion(conn, b["id"]) is True
+    assert deepdives.dismiss_suggestion(conn, b["id"]) is False
+    assert deepdives.list_suggestions(conn) == []
