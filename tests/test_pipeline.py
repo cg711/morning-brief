@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
+from mutagen.id3 import ID3
 
 from morning_brief import db, pipeline, speech
 from morning_brief.feeds import item_id
@@ -83,6 +84,10 @@ def test_happy_path_publishes_episode(conn, settings):
     assert "Storm hits coast" in select_prompt and "Old news" not in select_prompt
     write_prompt = claude.calls[1]["messages"][0]["content"]
     assert "(full text)" in write_prompt and "(summary-only)" in write_prompt
+
+    tags = ID3(str(settings.audio_dir / "2026-09-25.mp3"))
+    titles = [c.sub_frames["TIT2"].text[0] for c in sorted(tags.getall("CHAP"), key=lambda c: c.start_time)]
+    assert titles == ["Introduction", "Story 0", "Story 1", "Wrap-up"]
 
 
 def test_window_starts_at_previous_episode_cutoff(conn, settings):

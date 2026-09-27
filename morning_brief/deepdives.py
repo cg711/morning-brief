@@ -68,6 +68,53 @@ def add_topic(conn, topic: str, notes: str, now: datetime) -> int:
         return cur.lastrowid
 
 
+FOLLOW_UP_TITLE_MAX, FOLLOW_UP_HEADING_MAX = 120, 150
+
+
+def follow_up_notes(title: str, heading: str, text: str) -> str:
+    """Worker notes for a Go deeper topic, capped at NOTES_MAX with the excerpt cut at a word boundary."""
+    head = (f'Follow-up to "{title[:FOLLOW_UP_TITLE_MAX]}": go deeper on "{heading[:FOLLOW_UP_HEADING_MAX]}". '
+            "The earlier episode already covered: ")
+    tail_plain = ". Skip that overview and go further."
+    tail_punct = " Skip that overview and go further."
+    excerpt = text.strip().rstrip(" .")
+    room = NOTES_MAX - len(head) - max(len(tail_plain), len(tail_punct))
+    if len(excerpt) > room:
+        cut = excerpt[:room - 1]
+        if " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        excerpt = cut.rstrip(" ,;:.") + "…"
+    tail = tail_punct if excerpt.endswith(("…", "?", "!")) else tail_plain
+    return head + excerpt + tail
+
+
+def add_follow_up(conn, parent_id: int, section_index: int, now: datetime) -> int | None:
+    """Queue a deeper look at one section of a ready/heard episode, at the top of the queue.
+    None if the parent or section is invalid, or that section already has a follow-up."""
+    with _write_lock:
+        parent = conn.execute(
+            "SELECT t.status, t.script_json, d.title FROM topics t JOIN deep_dives d ON d.topic_id = t.id "
+            "WHERE t.id = ?", (parent_id,)
+        ).fetchone()
+        if parent is None or parent["status"] not in ("ready", "heard"):
+            return None
+        sections = json.loads(parent["script_json"])["sections"]
+        if not 0 <= section_index < len(sections):
+            return None
+        if conn.execute("SELECT 1 FROM topics WHERE parent_topic_id = ? AND parent_section = ?",
+                        (parent_id, section_index)).fetchone():
+            return None
+        section = sections[section_index]
+        top = conn.execute("SELECT COALESCE(MIN(position), 1) - 1 AS p FROM topics").fetchone()["p"]
+        cur = conn.execute(
+            "INSERT INTO topics (topic, notes, position, status, created_at, updated_at, parent_topic_id, "
+            "parent_section) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+            (section["heading"][:TOPIC_MAX], follow_up_notes(parent["title"], section["heading"], section["text"]),
+             top, _iso(now), _iso(now), parent_id, section_index),
+        )
+        return cur.lastrowid
+
+
 def get_topic(conn, topic_id: int):
     return conn.execute("SELECT * FROM topics WHERE id = ?", (topic_id,)).fetchone()
 
@@ -75,8 +122,10 @@ def get_topic(conn, topic_id: int):
 def list_topics(conn) -> list:
     return conn.execute(
         """SELECT t.*, d.title AS episode_title, d.word_count, d.duration_s, d.audio_bytes,
-                  d.published_at, d.heard_at, d.updated_at AS episode_updated_at
+                  d.published_at, d.heard_at, d.updated_at AS episode_updated_at, d.chapters_json,
+                  p.title AS parent_title
            FROM topics t LEFT JOIN deep_dives d ON d.topic_id = t.id
+                         LEFT JOIN deep_dives p ON p.topic_id = t.parent_topic_id
            ORDER BY t.position, t.created_at"""
     ).fetchall()
 
@@ -196,15 +245,16 @@ def begin_render(conn, topic_id: int, now: datetime) -> bool:
 
 
 def publish(conn, topic_id: int, *, title: str, word_count: int, duration_s: float, audio_bytes: int,
-            now: datetime) -> None:
+            now: datetime, chapters: list[tuple[str, float]] | None = None) -> None:
+    chapters_json = json.dumps(chapters) if chapters else None
     with _write_lock:
         conn.execute("BEGIN")
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO deep_dives "
-                "(topic_id, title, word_count, duration_s, audio_bytes, published_at, heard_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
-                (topic_id, title, word_count, duration_s, audio_bytes, _iso(now), _iso(now)),
+                "(topic_id, title, word_count, duration_s, audio_bytes, published_at, heard_at, updated_at, "
+                "chapters_json) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+                (topic_id, title, word_count, duration_s, audio_bytes, _iso(now), _iso(now), chapters_json),
             )
             conn.execute("UPDATE topics SET status = 'ready', updated_at = ? WHERE id = ?", (_iso(now), topic_id))
             conn.execute("COMMIT")
@@ -398,3 +448,11 @@ def passages(script: dict) -> list[str]:
         *(f"{s['heading']}. {s['text']}" for s in script["sections"]),
         script["outro"],
     ]
+
+
+def chapters(script: dict, starts: list[float]) -> list[tuple[str, float]]:
+    """Chapter marks for passages() output: title line, intro, one per section, outro."""
+    marks = [("Introduction", 0.0)]
+    marks += [(s["heading"], starts[2 + n]) for n, s in enumerate(script["sections"])]
+    marks.append(("Wrap-up", starts[-1]))
+    return marks

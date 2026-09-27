@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from typing import Callable
 
-from . import db, deepdives, notify as notify_mod, pipeline, speech
+from . import db, deepdives, id3, music as music_mod, notify as notify_mod, pipeline, speech
 from .config import Settings
 
 log = logging.getLogger(__name__)
@@ -65,7 +65,11 @@ def _render_locked(settings: Settings, conn, topic_id: int, synthesize: Callable
         return "gone"
     final = deepdives.audio_path(settings.deep_dives_dir, topic_id)
     try:
-        mp3, duration = synthesize(deepdives.passages(script), settings.voice, settings.models_dir)
+        audio = synthesize(deepdives.passages(script), settings.voice, settings.models_dir,
+                           music_mod.stings(settings, speech.SAMPLE_RATE))
+        duration = audio.duration
+        mp3, marks = id3.try_tag(audio.mp3, title=script["title"],
+                                 chapters=lambda: deepdives.chapters(script, audio.starts), duration=duration)
         settings.deep_dives_dir.mkdir(parents=True, exist_ok=True)
         partial = final.with_name(final.name + ".tmp")
         partial.write_bytes(mp3)
@@ -74,7 +78,7 @@ def _render_locked(settings: Settings, conn, topic_id: int, synthesize: Callable
             final.unlink(missing_ok=True)
             return "gone"
         deepdives.publish(conn, topic_id, title=script["title"], word_count=deepdives.script_word_count(script),
-                          duration_s=duration, audio_bytes=len(mp3), now=now())
+                          duration_s=duration, audio_bytes=len(mp3), now=now(), chapters=marks)
     except Exception as exc:
         log.exception("deep dive %s: speech failed", topic_id)
         if deepdives.get_topic(conn, topic_id) is None:  # deleted mid-render; don't leave an orphan file

@@ -1,5 +1,8 @@
+import json
 import time
 from dataclasses import replace
+
+from mutagen.id3 import ID3
 
 from morning_brief import deepdive_render, deepdives, pipeline, speech
 from tests.helpers import NOW, deep_dive_script
@@ -26,7 +29,7 @@ def test_render_publishes(conn, settings):
 def test_speech_error_fails_topic_and_keeps_script(conn, settings):
     topic_id = speaking_topic(conn)
 
-    def broken(passages, voice, models_dir):
+    def broken(passages, voice, models_dir, music=None):
         raise RuntimeError("espeak exploded")
 
     assert deepdive_render.render(settings, topic_id, synthesize=broken, now=lambda: NOW) == "failed"
@@ -127,7 +130,8 @@ def recorder():
 def test_ready_push_after_publish(conn, settings):
     topic_id = speaking_topic(conn)
     calls, notify = recorder()
-    fake = lambda passages, voice, models_dir: (b"\xff\xf3", 17 * 60 + 20.0)
+    fake = lambda passages, voice, models_dir, music=None: speech.Audio(
+        b"\xff\xf3", 17 * 60 + 20.0, [float(i) for i in range(len(passages))])
     assert deepdive_render.render(settings, topic_id, synthesize=fake, now=lambda: NOW, notify=notify) == "ready"
     assert calls == [("Deep dive ready", "How the Fed Began (17 min)", ["headphones"])]
 
@@ -136,7 +140,7 @@ def test_no_push_on_failure_or_deletion(conn, settings):
     calls, notify = recorder()
     failing = speaking_topic(conn)
 
-    def broken(passages, voice, models_dir):
+    def broken(passages, voice, models_dir, music=None):
         raise RuntimeError("boom")
 
     assert deepdive_render.render(settings, failing, synthesize=broken, now=lambda: NOW, notify=notify) == "failed"
@@ -155,3 +159,29 @@ def test_push_error_does_not_fail_the_episode(conn, settings):
     status = deepdive_render.render(settings, topic_id, synthesize=speech.fake_synthesize, now=lambda: NOW,
                                     notify=exploding)
     assert status == "ready" and deepdives.get_topic(conn, topic_id)["status"] == "ready"
+
+
+def test_render_embeds_and_stores_chapters(conn, settings):
+    topic_id = speaking_topic(conn)
+    assert deepdive_render.render(settings, topic_id, synthesize=speech.fake_synthesize, now=lambda: NOW) == "ready"
+    tags = ID3(str(deepdives.audio_path(settings.deep_dives_dir, topic_id)))
+    titles = [c.sub_frames["TIT2"].text[0] for c in sorted(tags.getall("CHAP"), key=lambda c: c.start_time)]
+    assert titles == ["Introduction", "Part 1", "Part 2", "Part 3", "Part 4", "Wrap-up"]
+    assert tags["TIT2"].text == ["How the Fed Began"]
+    row = [r for r in deepdives.list_topics(conn) if r["id"] == topic_id][0]
+    stored = json.loads(row["chapters_json"])
+    assert [c[0] for c in stored] == titles and stored[1][1] > 4.0  # after the intro sting + title + intro
+
+
+def test_tagging_failure_still_publishes(conn, settings, monkeypatch):
+    from morning_brief import id3
+
+    def boom(*args, **kwargs):
+        raise ValueError("bad chapters")
+
+    monkeypatch.setattr(id3, "tag", boom)
+    topic_id = speaking_topic(conn)
+    assert deepdive_render.render(settings, topic_id, synthesize=speech.fake_synthesize, now=lambda: NOW) == "ready"
+    row = [r for r in deepdives.list_topics(conn) if r["id"] == topic_id][0]
+    assert row["chapters_json"] is None
+    assert not deepdives.audio_path(settings.deep_dives_dir, topic_id).read_bytes().startswith(b"ID3")

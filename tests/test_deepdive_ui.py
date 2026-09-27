@@ -172,3 +172,77 @@ def test_running_long_label_and_sig(ui):
                  ((NOW - timedelta(minutes=61)).isoformat(),) * 2)
     later = ui.get(f"/partials/deep-dives?sig={sig}")
     assert later.status_code == 200 and '<span class="caution">running long</span>' in later.text
+
+
+def publish_with(conn, topic, chapters, heard=False):
+    t = deepdives.add_topic(conn, topic, "", NOW)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, deep_dive_script(sections=3), NOW)
+    deepdives.publish(conn, t, title=f"{topic} episode", word_count=2400, duration_s=4000.0, audio_bytes=1,
+                      now=NOW, chapters=chapters)
+    if heard:
+        deepdives.mark_heard(conn, t, NOW)
+    return t
+
+
+def test_seek_buttons_from_chapters(ui):
+    conn = conn_of(ui)
+    publish_with(conn, "Alpha", [("Introduction", 0.0), ("Part 1", 12.0), ("Part 2", 754.5),
+                                 ("Part 3", 3723.0), ("Wrap-up", 3900.0)])
+    html = ui.get("/").text
+    assert 'data-seek="12.0"' in html and "▶ 0:12" in html
+    assert 'data-seek="754.5"' in html and "▶ 12:34" in html
+    assert "▶ 1:02:03" in html
+    assert '<script src="/static/app.js" defer></script>' in html
+    assert ui.get("/static/app.js").status_code == 200
+
+
+def test_no_seek_buttons_without_chapters(ui):
+    publish_with(conn_of(ui), "Alpha", None)
+    assert "data-seek" not in ui.get("/").text
+
+
+def test_heard_cards_show_transcript_with_seek(ui):
+    publish_with(conn_of(ui), "Beta", [("Introduction", 0.0), ("Part 1", 30.0), ("Part 2", 60.0),
+                                       ("Part 3", 90.0), ("Wrap-up", 120.0)], heard=True)
+    html = ui.get("/").text
+    heard = html.split('<details class="heard" id="heard-list">')[1]
+    assert "Transcript &amp; sources" in heard and 'data-seek="30.0"' in heard
+
+
+def test_players_and_transcripts_get_stable_ids_for_swap_preservation(ui):
+    conn = conn_of(ui)
+    ready = publish_with(conn, "Alpha", None)
+    heard = publish_with(conn, "Beta", None, heard=True)
+    html = ui.get("/").text
+    assert f'id="player-{ready}" hx-preserve' in html
+    assert f'id="player-{heard}" hx-preserve' in html
+    assert f'id="transcript-{ready}"' in html
+    assert f'id="transcript-{heard}"' in html
+    assert 'id="heard-list"' in html
+
+
+def test_app_js_preserves_open_details_across_swaps(ui):
+    js = ui.get("/static/app.js").text
+    assert "htmx:beforeSwap" in js and "htmx:afterSettle" in js
+
+
+def test_go_deeper_button_queues_follow_up(ui):
+    conn = conn_of(ui)
+    parent = publish_with(conn, "Alpha", None)
+    html = ui.get("/").text
+    assert f'hx-post="/deep-dives/{parent}/deeper/0"' in html
+    assert ui.post(f"/deep-dives/{parent}/deeper/0").status_code == 403  # htmx-only
+    after = ui.post(f"/deep-dives/{parent}/deeper/0", headers=HX).text
+    assert "Follow-up queued" in after and f'hx-post="/deep-dives/{parent}/deeper/0"' not in after
+    assert f'hx-post="/deep-dives/{parent}/deeper/1"' in after
+    assert "Follow-up to Alpha episode" in after
+    queued = [r for r in deepdives.list_topics(conn) if r["status"] == "queued"]
+    assert queued[0]["topic"] == "Part 1" and queued[0]["parent_topic_id"] == parent
+
+
+def test_go_deeper_on_heard_episode(ui):
+    conn = conn_of(ui)
+    parent = publish_with(conn, "Beta", None, heard=True)
+    ui.post(f"/deep-dives/{parent}/deeper/2", headers=HX)
+    assert [r["topic"] for r in deepdives.list_topics(conn) if r["status"] == "queued"] == ["Part 3"]

@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         out.mkdir(exist_ok=True)
         with pipeline.run_lock(settings):
             for name in args.names:
-                mp3, _ = speech.synthesize([VOICE_SAMPLE], name, settings.models_dir)
+                mp3 = speech.synthesize([VOICE_SAMPLE], name, settings.models_dir).mp3
                 (out / f"{name}.mp3").write_bytes(mp3)
                 print(out / f"{name}.mp3")
         return 0

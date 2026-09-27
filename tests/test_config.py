@@ -71,3 +71,10 @@ def test_ntfy_settings():
             Settings.from_env({**base, "NTFY_TOPIC": bad})
     with pytest.raises(ConfigError):
         Settings.from_env({**base, "NTFY_SERVER": "http://ntfy.sh"})
+
+
+def test_music_setting(tmp_path):
+    base = {"FEED_TOKEN": "x" * 32, "DATA_DIR": str(tmp_path)}
+    assert Settings.from_env(base).music is True
+    assert Settings.from_env({**base, "MUSIC": "0"}).music is False
+    assert Settings.from_env(base).music_dir == tmp_path / "music"

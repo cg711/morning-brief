@@ -104,24 +104,37 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         total = round(seconds or 0)
         return f"{total // 60}:{total % 60:02d}"
 
+    def _clock_label(seconds: float) -> str:
+        total = int(seconds)
+        hours, rest = divmod(total, 3600)
+        minutes, secs = divmod(rest, 60)
+        return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
     def _minutes_since(iso: str) -> int:
         return max(0, int((clock() - datetime.fromisoformat(iso)).total_seconds() // 60))
 
     def _local_date(iso: str) -> str:
         return datetime.fromisoformat(iso).astimezone(TZ).strftime("%b %-d")
 
-    def episode(row) -> dict:
+    def episode(row, followed: frozenset = frozenset()) -> dict:
         script = json.loads(row["script_json"])
         sources = {s["source_id"]: dict(s) for s in deepdives.sources_for(conn, row["id"])}
         version = int(datetime.fromisoformat(row["episode_updated_at"]).timestamp())
+        marks = json.loads(row["chapters_json"]) if row["chapters_json"] else None
+        if marks is not None and len(marks) != len(script["sections"]) + 2:
+            marks = None  # not the layout we wrote; don't guess
+        starts = [marks[1 + n][1] for n in range(len(script["sections"]))] if marks else None
         return {
             "id": row["id"], "title": row["episode_title"], "topic": row["topic"],
             "duration": _duration(row["duration_s"]),
             "audio_url": f"/audio/{settings.feed_token}/deep-dives/{row['id']}.mp3?v={version}",
             "intro": script["intro"], "outro": script["outro"],
             "sections": [{"heading": s["heading"], "text": s["text"],
-                          "sources": [sources[i] for i in s["source_ids"] if i in sources]}
-                         for s in script["sections"]],
+                          "sources": [sources[i] for i in s["source_ids"] if i in sources],
+                          "start": starts[n] if starts else None,
+                          "start_label": _clock_label(starts[n]) if starts else None,
+                          "index": n, "followed": n in followed}
+                         for n, s in enumerate(script["sections"])],
             "published_at": row["published_at"], "heard_at": row["heard_at"],
             "heard_date": _local_date(row["heard_at"]) if row["heard_at"] else None,
         }
@@ -138,18 +151,23 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
     def section_view(error: str | None = None) -> dict:
         rows = deepdives.list_topics(conn)
         long_ids = {r["id"] for r in deepdives.long_running(conn, clock())}
+        followed: dict[int, set[int]] = {}
+        for row in rows:
+            if row["parent_topic_id"] is not None:
+                followed.setdefault(row["parent_topic_id"], set()).add(row["parent_section"])
         groups = {"ready": [], "in_progress": [], "queued": [], "failed": [], "heard": []}
         for row in rows:
             status = row["status"]
             if status in ("ready", "heard"):
-                groups[status].append(episode(row))
+                groups[status].append(episode(row, frozenset(followed.get(row["id"], ()))))
             elif status in ("researching", "speaking"):
                 groups["in_progress"].append({"id": row["id"], "topic": row["topic"], "status": status,
                                               "minutes": _minutes_since(row["updated_at"]),
-                                              "long": row["id"] in long_ids})
+                                              "long": row["id"] in long_ids,
+                                              "parent_title": row["parent_title"]})
             else:
                 groups[status].append({"id": row["id"], "topic": row["topic"], "notes": row["notes"],
-                                       "error": row["error"]})
+                                       "error": row["error"], "parent_title": row["parent_title"]})
         groups["ready"].sort(key=lambda e: e["published_at"], reverse=True)
         groups["heard"].sort(key=lambda e: e["heard_at"], reverse=True)
         return {**groups, "polling": bool(groups["in_progress"]), "error": error,
@@ -199,6 +217,12 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         check_hx_request(request)
         if deepdives.retry(conn, topic_id, clock()) == "speaking":
             start_render(topic_id)
+        return render_section(request)
+
+    @router.post("/deep-dives/{topic_id}/deeper/{section_index}")
+    def deeper(topic_id: int, section_index: int, request: Request):
+        check_hx_request(request)
+        deepdives.add_follow_up(conn, topic_id, section_index, clock())
         return render_section(request)
 
     @router.delete("/deep-dives/{topic_id}")

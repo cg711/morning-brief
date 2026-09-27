@@ -3,9 +3,12 @@ from __future__ import annotations
 import gc
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 import lameenc
 import numpy as np
+
+from .music import Music
 
 MODEL_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 # fp32 on purpose: on an older CPU without AVX2/VNNI (tested: i5-3570) int8 ran at 2.1x real time; fp32 at 0.62x.
@@ -13,6 +16,8 @@ MODEL_FILE = "kokoro-v1.0.onnx"
 VOICES_FILE = "voices-v1.0.bin"
 SAMPLE_RATE = 24000
 SEGMENT_PAUSE_S = 0.6
+INTRO_GAP_S = 0.3
+OUTRO_GAP_S = 0.6
 BITRATE_KBPS = 64
 SPEED = 1.1  # user-chosen pace (~146 wpm); 1.0 ran 666 words to 5:01
 FAKE_WORDS_PER_SECOND = 2.4
@@ -24,14 +29,47 @@ def script_passages(script: dict) -> list[str]:
     return [script["intro"], *(seg["text"] for seg in script["segments"]), script["outro"]]
 
 
-def join_with_pauses(chunks: list[np.ndarray], sample_rate: int) -> np.ndarray:
-    gap = np.zeros(int(sample_rate * SEGMENT_PAUSE_S), dtype=np.float32)
-    parts = []
+def script_chapters(script: dict, starts: list[float]) -> list[tuple[str, float]]:
+    """Chapter marks for script_passages() output (daily brief): intro, one per segment, outro."""
+    marks = [("Introduction", 0.0)]
+    marks += [(seg["headline"], starts[1 + n]) for n, seg in enumerate(script["segments"])]
+    marks.append(("Wrap-up", starts[-1]))
+    return marks
+
+
+class Audio(NamedTuple):
+    mp3: bytes
+    duration: float        # seconds
+    starts: list[float]    # start second of each passage in the final audio
+
+
+def _silence(seconds: float, sample_rate: int) -> np.ndarray:
+    return np.zeros(int(sample_rate * seconds), dtype=np.float32)
+
+
+def assemble(chunks: list[np.ndarray], sample_rate: int, music: Music | None = None) -> tuple[np.ndarray, list[float]]:
+    """[intro sting, gap] + passages with pauses between + [gap, outro sting]. Returns samples and passage starts."""
+    parts: list[np.ndarray] = []
+    starts: list[float] = []
+    position = 0
+
+    def add(samples: np.ndarray) -> None:
+        nonlocal position
+        parts.append(samples.astype(np.float32, copy=False))
+        position += len(samples)
+
+    if music is not None:
+        add(music.intro)
+        add(_silence(INTRO_GAP_S, sample_rate))
     for n, chunk in enumerate(chunks):
         if n:
-            parts.append(gap)
-        parts.append(chunk.astype(np.float32))
-    return np.concatenate(parts)
+            add(_silence(SEGMENT_PAUSE_S, sample_rate))
+        starts.append(position / sample_rate)
+        add(chunk)
+    if music is not None:
+        add(_silence(OUTRO_GAP_S, sample_rate))
+        add(music.outro)
+    return np.concatenate(parts), starts
 
 
 def encode_mp3(samples: np.ndarray, sample_rate: int) -> bytes:
@@ -69,8 +107,9 @@ def ensure_models(models_dir: Path, fetch=_fetch) -> tuple[Path, Path]:
     return paths[0], paths[1]
 
 
-def synthesize(passages: list[str], voice: str, models_dir: Path) -> tuple[bytes, float]:
-    """Speak each passage with Kokoro, join with pauses, encode MP3. The model is loaded only for this call."""
+def synthesize(passages: list[str], voice: str, models_dir: Path, music: Music | None = None) -> Audio:
+    """Speak each passage with Kokoro, lay it out with pauses (and music), encode MP3. The model is loaded
+    only for this call."""
     from kokoro_onnx import Kokoro  # heavy import; espeak fails on macOS, so only the container gets here
 
     model, voices = ensure_models(models_dir)
@@ -83,12 +122,15 @@ def synthesize(passages: list[str], voice: str, models_dir: Path) -> tuple[bytes
     finally:
         del kokoro
         gc.collect()
-    samples = join_with_pauses(chunks, sample_rate)
-    return encode_mp3(samples, sample_rate), len(samples) / sample_rate
+    if music is not None and sample_rate != SAMPLE_RATE:
+        raise RuntimeError(f"Kokoro returned {sample_rate} Hz; music is {SAMPLE_RATE} Hz")
+    samples, starts = assemble(chunks, sample_rate, music)
+    return Audio(encode_mp3(samples, sample_rate), len(samples) / sample_rate, starts)
 
 
-def fake_synthesize(passages: list[str], voice: str, models_dir: Path) -> tuple[bytes, float]:
-    """Silent audio as long as the speech would be. For development on macOS."""
-    seconds = max(1.0, sum(len(p.split()) for p in passages) / FAKE_WORDS_PER_SECOND)
-    samples = np.zeros(int(SAMPLE_RATE * seconds), dtype=np.float32)
-    return encode_mp3(samples, SAMPLE_RATE), seconds
+def fake_synthesize(passages: list[str], voice: str, models_dir: Path, music: Music | None = None) -> Audio:
+    """Silent speech sized like the real thing, laid out like the real thing. For development on macOS."""
+    chunks = [np.zeros(int(SAMPLE_RATE * max(0.5, len(p.split()) / FAKE_WORDS_PER_SECOND)), dtype=np.float32)
+              for p in passages]
+    samples, starts = assemble(chunks, SAMPLE_RATE, music)
+    return Audio(encode_mp3(samples, SAMPLE_RATE), len(samples) / SAMPLE_RATE, starts)
