@@ -100,3 +100,9 @@ def test_app_state_round_trip(conn):
 def test_topics_have_long_notified_column(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(topics)")}
     assert "long_notified" in cols
+
+
+def test_phase2_columns(conn):
+    dd = {r["name"] for r in conn.execute("PRAGMA table_info(deep_dives)")}
+    topics = {r["name"] for r in conn.execute("PRAGMA table_info(topics)")}
+    assert "chapters_json" in dd and {"parent_topic_id", "parent_section"} <= topics

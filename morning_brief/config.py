@@ -59,6 +59,7 @@ class Settings:
     worker_token: str = ""
     ntfy_topic: str = ""
     ntfy_server: str = "https://ntfy.sh"
+    music: bool = True
 
     @property
     def db_path(self) -> Path:
@@ -75,6 +76,10 @@ class Settings:
     @property
     def models_dir(self) -> Path:
         return self.data_dir / "models"
+
+    @property
+    def music_dir(self) -> Path:
+        return self.data_dir / "music"
 
     @classmethod
     def from_env(cls, env=None) -> Settings:
@@ -113,4 +118,5 @@ class Settings:
             worker_token=worker_token,
             ntfy_topic=ntfy_topic,
             ntfy_server=ntfy_server,
+            music=env.get("MUSIC", "1") != "0",
         )

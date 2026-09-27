@@ -12,7 +12,7 @@ from typing import Callable
 
 import httpx
 
-from . import articles, db, feeds, retention, speech, window, writer
+from . import articles, db, feeds, id3, music, podcast, retention, speech, window, writer
 from .config import TZ, Settings
 
 log = logging.getLogger(__name__)
@@ -145,7 +145,11 @@ def _generate(deps: Deps, conn, run_id: int, episode_date: str, started: datetim
     script = writer.write_script(deps.claude, settings.model, stories, started, usage)
 
     db.set_stage(conn, run_id, "speaking")
-    mp3, duration = deps.synthesize(speech.script_passages(script), settings.voice, settings.models_dir)
+    audio = deps.synthesize(speech.script_passages(script), settings.voice, settings.models_dir,
+                            music.stings(settings, speech.SAMPLE_RATE))
+    duration = audio.duration
+    mp3, _ = id3.try_tag(audio.mp3, title=podcast.episode_title(episode_date),
+                         chapters=lambda: speech.script_chapters(script, audio.starts), duration=duration)
 
     db.set_stage(conn, run_id, "publishing")
     settings.audio_dir.mkdir(parents=True, exist_ok=True)

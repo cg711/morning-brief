@@ -103,6 +103,7 @@ Each run picks 6–8 stories. It uses full article text where the feed or `robot
 |---|---|---|
 | Voice | `VOICE` in `.env` | Any Kokoro voice (`am_michael`, `af_heart`, `af_bella`, `bf_emma`, …) |
 | Speaking pace | `SPEED` in `morning_brief/speech.py` | Default 1.1× |
+| Intro/outro music | `data/music/intro.wav`, `outro.wav`; `MUSIC=0` | A generated sting by default. Your own PCM WAVs, up to 30 s, replace it |
 | News sources | `feeds.yaml` | Grouped by segment: `headlines`, `tech`, `business`, `local` |
 | Schedule and time zone | `RUN_AT`, `RETRY_AT`, `BRIEF_TZ` | Daily brief only |
 
@@ -116,7 +117,7 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 - Kokoro's bundled espeak doesn't run on macOS. Set `FAKE_SPEECH=1` for silent placeholder audio on a Mac, and run the real-speech test inside the container:
 
   ```bash
-  docker compose run --rm -v "$PWD":/work -w /work morning-brief sh -c "pip install -q --user pytest && python -m pytest -q -p no:cacheprovider -m container"
+  docker compose run --rm -v "$PWD":/work -w /work morning-brief sh -c "pip install -q --user pytest mutagen && python -m pytest -q -p no:cacheprovider -m container"
   ```
 
 - `CLAUDE_OFFLINE=1` swaps the Anthropic API for a deterministic local stand-in. It lets you run the whole daily pipeline for free; it's a plumbing check, not a quality check.

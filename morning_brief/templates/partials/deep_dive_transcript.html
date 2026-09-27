@@ -1,13 +1,18 @@
-<details class="transcript">
+<details class="transcript" id="transcript-{{ ep.id }}">
   <summary>Transcript &amp; sources</summary>
   <p>{{ ep.intro }}</p>
   {% for sec in ep.sections %}
-    <h3>{{ sec.heading }}</h3>
+    <h3>{{ sec.heading }}{% if sec.start is not none %} <button type="button" class="seek" data-seek="{{ '%.1f'|format(sec.start) }}">▶ {{ sec.start_label }}</button>{% endif %}</h3>
     <p>{{ sec.text }}</p>
     {% if sec.sources %}
       <p class="sources">
         {% for s in sec.sources %}<a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title }}{% if s.publisher %} — {{ s.publisher }}{% endif %}</a>{% if not loop.last %} · {% endif %}{% endfor %}
       </p>
+    {% endif %}
+    {% if sec.followed %}
+      <p class="muted small">Follow-up queued</p>
+    {% else %}
+      <button hx-post="/deep-dives/{{ ep.id }}/deeper/{{ sec.index }}" hx-target="#deep-dives" hx-swap="outerHTML">Go deeper</button>
     {% endif %}
   {% endfor %}
   <p>{{ ep.outro }}</p>

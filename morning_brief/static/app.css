@@ -52,3 +52,4 @@ button.danger { color: var(--danger); }
 .deep-ready { border-color: var(--accent); }
 .heard summary { cursor: pointer; color: var(--accent); margin: 12px 0; }
 .foot .copy + label { margin-top: 12px; }
+.seek { min-height: 0; padding: 2px 8px; margin-left: 6px; font-size: .8rem; vertical-align: middle; }

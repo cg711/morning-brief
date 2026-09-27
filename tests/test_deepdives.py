@@ -345,3 +345,84 @@ def test_mark_long_notified_once_per_stage_and_cleared_by_claim_and_retry(conn):
     deepdives.release_expired_claims(conn, NOW + timedelta(hours=4))  # back to queued
     deepdives.claim(conn, NOW + timedelta(hours=4))                   # a fresh attempt clears it
     assert deepdives.mark_long_notified(conn, u, "researching") is True
+
+
+def test_chapters_from_script_and_starts():
+    script = deep_dive_script(2400, sections=3)
+    starts = [0.0, 4.0, 60.0, 400.0, 800.0, 1100.0]  # title, intro, 3 sections, outro
+    assert deepdives.chapters(script, starts) == [
+        ("Introduction", 0.0), ("Part 1", 60.0), ("Part 2", 400.0), ("Part 3", 800.0), ("Wrap-up", 1100.0)]
+
+
+def test_publish_stores_chapters_and_list_topics_returns_them(conn):
+    import json
+    t = deepdives.add_topic(conn, "A", "", NOW)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, deep_dive_script(), NOW)
+    deepdives.publish(conn, t, title="T", word_count=1, duration_s=10.0, audio_bytes=1, now=NOW,
+                      chapters=[("Introduction", 0.0), ("Wrap-up", 5.0)])
+    row = [r for r in deepdives.list_topics(conn) if r["id"] == t][0]
+    assert json.loads(row["chapters_json"]) == [["Introduction", 0.0], ["Wrap-up", 5.0]]
+    assert row["parent_title"] is None
+    u = deepdives.add_topic(conn, "B", "", NOW)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, u, deep_dive_script(), NOW)
+    deepdives.publish(conn, u, title="U", word_count=1, duration_s=10.0, audio_bytes=1, now=NOW)
+    assert [r for r in deepdives.list_topics(conn) if r["id"] == u][0]["chapters_json"] is None
+
+
+def _published(conn, title="How the Fed Began"):
+    t = deepdives.add_topic(conn, "Fed", "", NOW)
+    deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, t, deep_dive_script(title=title), NOW)
+    deepdives.publish(conn, t, title=title, word_count=2400, duration_s=900.0, audio_bytes=1, now=NOW)
+    return t
+
+
+def test_follow_up_notes_format_and_cap():
+    short = deepdives.follow_up_notes("The Fed", "The Panic of 1907", "Banks failed. J.P. Morgan stepped in.")
+    assert short == ('Follow-up to "The Fed": go deeper on "The Panic of 1907". The earlier episode already '
+                     "covered: Banks failed. J.P. Morgan stepped in. Skip that overview and go further.")
+    long = deepdives.follow_up_notes("T" * 200, "H" * 300, "lorem ipsum " * 200)
+    assert len(long) <= deepdives.NOTES_MAX
+    assert "…" in long and long.endswith("… Skip that overview and go further.")
+    assert '"' + "T" * 120 + '"' in long and '"' + "H" * 150 + '"' in long
+    excerpt = long.split("already covered: ")[1].split("…")[0]
+    assert excerpt.endswith("ipsum") or excerpt.endswith("lorem")  # cut at a word boundary
+
+
+def test_follow_up_notes_avoids_double_punctuation():
+    question = deepdives.follow_up_notes("The Fed", "The Panic of 1907", "Why did banks fail?")
+    assert question.endswith("Why did banks fail? Skip that overview and go further.")
+    assert "?." not in question
+
+
+def test_add_follow_up_queues_at_top_once(conn):
+    parent = _published(conn)
+    other = deepdives.add_topic(conn, "Something else", "", NOW)
+    child = deepdives.add_follow_up(conn, parent, 1, NOW)
+    row = deepdives.get_topic(conn, child)
+    assert row["topic"] == "Part 2" and row["status"] == "queued"
+    assert row["parent_topic_id"] == parent and row["parent_section"] == 1
+    assert row["notes"].startswith('Follow-up to "How the Fed Began": go deeper on "Part 2".')
+    queued = [r["id"] for r in deepdives.list_topics(conn) if r["status"] == "queued"]
+    assert queued == [child, other]
+    assert deepdives.add_follow_up(conn, parent, 1, NOW) is None  # duplicate
+    assert deepdives.add_follow_up(conn, parent, 0, NOW) is not None  # a different section is fine
+
+
+def test_add_follow_up_refuses_bad_input(conn):
+    parent = _published(conn)
+    assert deepdives.add_follow_up(conn, parent, 99, NOW) is None
+    assert deepdives.add_follow_up(conn, parent, -1, NOW) is None
+    assert deepdives.add_follow_up(conn, 12345, 0, NOW) is None
+    queued = deepdives.add_topic(conn, "Not published", "", NOW)
+    assert deepdives.add_follow_up(conn, queued, 0, NOW) is None
+
+
+def test_deleting_parent_keeps_child(conn, settings):
+    parent = _published(conn)
+    child = deepdives.add_follow_up(conn, parent, 0, NOW)
+    deepdives.delete_topic(conn, settings.deep_dives_dir, parent)
+    row = deepdives.get_topic(conn, child)
+    assert row is not None and row["parent_topic_id"] is None
