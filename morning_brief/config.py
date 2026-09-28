@@ -76,6 +76,8 @@ class Settings:
     share_base_url: str = ""
     funnel_feeds: bool = False
     inbox_token: str = field(default="", repr=False)
+    weather_lat: float | None = None
+    weather_lon: float | None = None
 
     @property
     def db_path(self) -> Path:
@@ -152,6 +154,17 @@ class Settings:
             raise ConfigError("SHARE_BASE_URL must be an https:// URL (your Funnel address), or empty to turn sharing off")
         if share_base_url and not urlsplit(share_base_url).hostname:
             raise ConfigError("SHARE_BASE_URL must be an https:// URL (your Funnel address), or empty to turn sharing off")
+        lat_raw, lon_raw = env.get("WEATHER_LAT", "").strip(), env.get("WEATHER_LON", "").strip()
+        if bool(lat_raw) != bool(lon_raw):
+            raise ConfigError("WEATHER_LAT and WEATHER_LON must be set together (or neither)")
+        weather_lat = weather_lon = None
+        if lat_raw:
+            try:
+                weather_lat, weather_lon = float(lat_raw), float(lon_raw)
+            except ValueError:
+                raise ConfigError("WEATHER_LAT and WEATHER_LON must be numbers, e.g. 44.98 and -93.27") from None
+            if not (-90 <= weather_lat <= 90 and -180 <= weather_lon <= 180):
+                raise ConfigError("WEATHER_LAT must be within ±90 and WEATHER_LON within ±180")
         return cls(
             data_dir=Path(env.get("DATA_DIR", "data")),
             feed_token=token,
@@ -184,4 +197,6 @@ class Settings:
             share_base_url=share_base_url,
             funnel_feeds=env.get("FUNNEL_FEEDS", "0") == "1",
             inbox_token=inbox_token,
+            weather_lat=weather_lat,
+            weather_lon=weather_lon,
         )

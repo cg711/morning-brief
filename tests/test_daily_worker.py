@@ -367,9 +367,18 @@ def test_validate_personal_segment():
     assert any("must be the first segment" in p for p in daily_worker.validate_submission(late, known, personal_allowed=True))
     twice = {**news, "segments": [personal_seg(), personal_seg(), *news["segments"]]}
     assert any("must be the first segment" in p for p in daily_worker.validate_submission(twice, known, personal_allowed=True))
-    for bad in (personal_seg(10), personal_seg(120), personal_seg(item_ids=["a"]), {**personal_seg(), "text": "hi\x07 " * 30}):
+    for bad in (personal_seg(10), personal_seg(170), personal_seg(item_ids=["a"]), {**personal_seg(), "text": "hi\x07 " * 30}):
         script = {**news, "segments": [bad, *news["segments"]]}
         assert any("personal" in p for p in daily_worker.validate_submission(script, known, personal_allowed=True)), bad
+
+
+def test_personal_segment_word_limit_is_160():
+    news = script_for(["a"])
+    known = {"a"}
+    ok = {**news, "segments": [personal_seg(160), *news["segments"]]}
+    assert daily_worker.validate_submission(ok, known, personal_allowed=True) == []
+    over = {**news, "segments": [personal_seg(161), *news["segments"]]}
+    assert any("20 to 160" in p for p in daily_worker.validate_submission(over, known, personal_allowed=True))
 
 
 def test_personal_words_do_not_count_toward_news_range():

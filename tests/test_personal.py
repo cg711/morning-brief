@@ -23,8 +23,9 @@ def state(day="2026-09-25", score=67.0, insights=True):
 
 def http_for(payload=None, status=200):
     def handler(request):
-        assert str(request.url) == "http://oura.test/api/state"
-        return httpx.Response(status, json=payload) if payload is not None else httpx.Response(status)
+        if request.url.host == "oura.test" and request.url.path == "/api/state":
+            return httpx.Response(status, json=payload) if payload is not None else httpx.Response(status)
+        return httpx.Response(404)
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
@@ -99,7 +100,8 @@ def test_check_prints_no_amounts_or_secrets(settings):
     assert "77" not in text and "Secret Shop" not in text and "pw-secret" not in text
     lines.clear()
     personal.check(settings, http_for(state()), NOW, out=lines.append)
-    assert lines == ["Oura: not configured", "Actual: not configured"]
+    assert lines == ["Oura: not configured", "Calendar: not configured", "Weather: failed (no location)",
+                     "Actual: not configured"]
 
 
 def test_oura_facts_ignores_non_finite_numbers():
