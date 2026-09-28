@@ -116,6 +116,10 @@ In worker mode the daily brief can open with a short "Your morning" segment: las
 
 Each source is optional; if one can't be reached, that part is simply left out. Privacy: these numbers and payee names go to your Mac worker's Claude session and into the episode audio and transcript on your own server. It isn't included in the podcast feed's episode notes. The Mac keeps the latest claim (with these facts) in its cache folder, and each morning's run overwrites it.
 
+## Send from your phone (optional)
+
+Share a link or some text from any iPhone app to a **Morning Brief** Shortcut. It asks for an optional note and whether to put the topic at the top or the end of the queue, then adds a deep dive with your page defaults. Set `INBOX_TOKEN`, then follow [shortcuts/README.md](shortcuts/README.md). The endpoint is `POST /api/inbox`; like the rest of `/api/`, it's reachable only on your tailnet and never through Funnel.
+
 ## Login and sharing (optional)
 
 **Login.** Set `UI_PASSWORD` in `.env` and restart. The web UI then asks for the password once per device and remembers it with a signed cookie for `SESSION_DAYS` days (default 90).
