@@ -128,7 +128,7 @@ def test_feed_and_audio(api, settings):
     assert api.get(f"/audio/{FEED}/deep-dives/999.mp3").status_code == 404
     assert api.get("/feed/deep-dives-cover.png").content[:4] == b"\x89PNG"
     funnel = {"Tailscale-Funnel-Request": "?1"}
-    assert api.get(f"/feed/deep-dives/{FEED}.xml", headers=funnel).status_code == 200
+    assert api.get(f"/feed/deep-dives/{FEED}.xml", headers=funnel).status_code == 404
 
 
 def test_worker_calls_record_check_in(api):

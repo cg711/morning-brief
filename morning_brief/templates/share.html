@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{{ ep.title }}</title>
+  <meta property="og:title" content="{{ ep.title }}">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:type" content="article">
+  <style>
+    :root { --bg: #f7f5f0; --surface: #fff; --text: #1d1b18; --muted: #6b665e; --accent: #c2410c; --border: #e4e0d8; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #141311; --surface: #1f1d1a; --text: #f2efe9; --muted: #a39d93; --accent: #fb923c; --border: #34312c; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 680px; margin: 0 auto; padding: 24px 16px 48px; }
+    .kicker { color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: .8rem; margin: 0; }
+    h1 { margin: 4px 0 4px; line-height: 1.25; }
+    .meta, .sources, .sources a { color: var(--muted); }
+    audio { width: 100%; margin: 16px 0; }
+    .chapters { list-style: none; padding: 0; margin: 0 0 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    .chapters li { border-top: 1px solid var(--border); }
+    .chapters li:first-child { border-top: 0; }
+    .chapters button { all: unset; box-sizing: border-box; display: flex; gap: 12px; width: 100%; padding: 12px 14px; cursor: pointer; min-height: 44px; }
+    .chapters button:focus-visible { outline: 2px solid var(--accent); }
+    .chapters .time { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 3.5em; }
+    h2 { font-size: 1.15rem; margin: 28px 0 8px; }
+    .sources { font-size: .9rem; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="kicker">Deep dive</p>
+  <h1>{{ ep.title }}</h1>
+  <p class="meta">{{ published }} · {{ ep.duration }}</p>
+  <audio id="player" controls preload="metadata" src="/s/{{ token }}/audio.mp3"></audio>
+  {% if chapters %}
+  <ol class="chapters">
+    {% for sec in chapters %}
+    <li><button type="button" data-seek="{{ '%.1f'|format(sec.start) }}"><span class="time">{{ sec.start_label }}</span><span>{{ sec.heading }}</span></button></li>
+    {% endfor %}
+  </ol>
+  {% endif %}
+  <section class="transcript">
+    <p>{{ ep.intro }}</p>
+    {% for sec in ep.sections %}
+    <h2>{{ sec.heading }}</h2>
+    {% if sec.lines %}
+      {% for line in sec.lines %}<p><strong>{{ line.speaker }}:</strong> {{ line.text }}</p>{% endfor %}
+    {% else %}
+      <p>{{ sec.text }}</p>
+    {% endif %}
+    {% if sec.sources %}
+    <p class="sources">{% for s in sec.sources %}<a href="{{ s.url }}" rel="noopener noreferrer">{{ s.title }}{% if s.publisher %} — {{ s.publisher }}{% endif %}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% endfor %}
+    <p>{{ ep.outro }}</p>
+  </section>
+</main>
+<script>{{ seek_script }}</script>
+</body>
+</html>

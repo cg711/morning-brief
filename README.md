@@ -45,7 +45,7 @@ The container runs as uid:gid 1000:1000 by default, not root. If your user's `id
 
 Open `http://<TAILSCALE_IP>:8430`. The first episode downloads the Kokoro model (~340 MB) into `data/models/`.
 
-> The web UI has no login. Keep it on a private network (Tailscale or your LAN); don't expose port 8430 to the internet.
+> Keep the web UI on a private network (Tailscale or your LAN); don't expose port 8430 to the internet. You can also put it behind a password; see [Login and sharing](#login-and-sharing-optional).
 
 ## Serving the feeds to your phone
 
@@ -59,7 +59,7 @@ Set `PUBLIC_BASE_URL=https://<machine>.<your-tailnet>.ts.net:8443` in `.env` and
 
 In Apple Podcasts, go to **Library → ⋯ → Follow a Show by URL**, paste the URL, then turn on **Automatically Download** in the show's settings. Apple Podcasts fetches private feeds from the phone itself, so it works over Tailscale.
 
-Apps that fetch feeds from their own servers can't reach a tailnet address; Overcast and Pocket Casts are examples. If you need one of those, expose only `/feed/` and `/audio/` with Tailscale Funnel. The app refuses every other path for Funnel traffic.
+Apps that fetch feeds from their own servers can't reach a tailnet address; Overcast and Pocket Casts are examples. If you need one of those, set `FUNNEL_FEEDS=1` and expose `/feed/` and `/audio/` with Tailscale Funnel. Without that setting, the app answers Funnel traffic only on share links (`/s/…`).
 
 ## Deep dives: setting up the Mac worker
 
@@ -115,6 +115,33 @@ In worker mode the daily brief can open with a short "Your morning" segment: las
     docker compose exec morning-brief python -m morning_brief.personal --check
 
 Each source is optional; if one can't be reached, that part is simply left out. Privacy: these numbers and payee names go to your Mac worker's Claude session and into the episode audio and transcript on your own server. It isn't included in the podcast feed's episode notes. The Mac keeps the latest claim (with these facts) in its cache folder, and each morning's run overwrites it.
+
+## Login and sharing (optional)
+
+**Login.** Set `UI_PASSWORD` in `.env` and restart. The web UI then asks for the password once per device and remembers it with a signed cookie for `SESSION_DAYS` days (default 90).
+- Changing the password logs every device out.
+- After five wrong passwords in ten minutes, logins pause until ten minutes have passed.
+- The podcast feeds, audio, share links and the Mac worker's API keep their own tokens and don't need the login.
+- The signing secret is created in `data/session_secret`.
+- Logging out only clears that browser's cookie. To log out every device at once, change the password or delete `data/session_secret` and restart.
+
+**Share links.** You can share a single deep dive with someone who isn't on your tailnet.
+1. Turn on [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) for your server. You may first need to allow Funnel for the machine in your tailnet policy. Then expose only the share path:
+
+   ```bash
+   sudo tailscale funnel --bg --set-path /s/ http://127.0.0.1:8430/s/
+   ```
+
+2. Set `SHARE_BASE_URL` to the machine's Funnel address, e.g. `https://myserver.tailnet-name.ts.net`, and restart.
+3. Ready and heard deep dives get a **Share** button. It creates a link to a small page with the player, chapters and transcript. The page has no way back into the app.
+
+What to expect:
+- A link lasts until you press **Revoke link**, or until you delete the episode.
+- Shared episodes are never auto-deleted.
+- Daily briefs can't be shared.
+- Share pages ask search engines not to index them.
+- The app refuses every non-`/s/` path for Funnel traffic, even if Funnel is set up more broadly.
+- Unsetting `SHARE_BASE_URL` hides the Share button but doesn't kill existing links; revoke them first, or remove the Funnel mapping.
 
 ## Customizing
 

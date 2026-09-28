@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Morning Brief</h1>
+<form class="card login" method="post" action="/login">
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+  <input type="hidden" name="next" value="{{ next }}">
+  {% if error %}<p class="warn small">{{ error }}</p>{% endif %}
+  <div class="actions"><button type="submit">Log in</button></div>
+  <p class="muted small">This device stays logged in for {{ days }} days.</p>
+</form>
+{% endblock %}

@@ -7,20 +7,22 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import daily_routes, daily_worker, db, deepdive_render, deepdive_routes, notify, pipeline, podcast, retention, scheduler
+from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, notify, pipeline, podcast, retention, scheduler, share_routes
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
 COVER = PKG / "static" / "cover.png"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FUNNEL_HEADER = "tailscale-funnel-request"
-PUBLIC_PREFIXES = ("/feed/", "/audio/")
+PUBLIC_PREFIXES = ("/s/",)
+FEED_PREFIXES = ("/feed/", "/audio/")
 LONG_MINUTES = 30
 STAGE_LABELS = {"starting": "Starting", "fetching": "Gathering stories", "waiting": "Waiting for your Mac",
                 "selecting": "Picking stories", "reading": "Picking stories", "speaking": "Speaking",
@@ -85,10 +87,32 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     app.state.notifier = notifier
     app.mount("/static", StaticFiles(directory=PKG / "static"), name="static")
 
+    secret = auth.load_secret(settings.data_dir) if settings.login_enabled else b""
+    limiter = auth.FailureLimiter()
+
+    def logged_in(request: Request) -> bool:
+        return auth.verify(secret, settings.ui_password, request.cookies.get(auth.COOKIE),
+                           int(clock().timestamp()))
+
+    # Registered before funnel_guard, so it runs after it (Starlette runs the last-added middleware first).
+    @app.middleware("http")
+    async def login_guard(request: Request, call_next):
+        path = request.url.path
+        if not settings.login_enabled or path == "/login" or path.startswith(auth.OPEN_PREFIXES):
+            return await call_next(request)
+        if logged_in(request):
+            return await call_next(request)
+        if "hx-request" in request.headers:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        target = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/login?{urlencode({'next': target})}", status_code=303)
+
+    funnel_allowed = PUBLIC_PREFIXES + (FEED_PREFIXES if settings.funnel_feeds else ())
+
     @app.middleware("http")
     async def funnel_guard(request: Request, call_next):
-        # Requests arriving through Tailscale Funnel may only reach the feed and audio.
-        if FUNNEL_HEADER in request.headers and not request.url.path.startswith(PUBLIC_PREFIXES):
+        # Requests arriving through Tailscale Funnel may only reach share links (and feeds with FUNNEL_FEEDS=1).
+        if FUNNEL_HEADER in request.headers and not request.url.path.startswith(funnel_allowed):
             return Response(status_code=404)
         return await call_next(request)
 
@@ -109,11 +133,51 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
         if "hx-request" not in request.headers:
             raise HTTPException(403)
 
+    def login_page(request: Request, target: str, error: str | None = None, status: int = 200):
+        return templates.TemplateResponse(request, "login.html",
+                                          {"next": target, "error": error, "days": settings.session_days},
+                                          status_code=status)
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(request: Request, next: str = "/"):
+        target = auth.safe_next(next)
+        if not settings.login_enabled or logged_in(request):
+            return RedirectResponse(target if settings.login_enabled else "/", status_code=303)
+        return login_page(request, target)
+
+    @app.post("/login", response_class=HTMLResponse)
+    async def login(request: Request):
+        if not settings.login_enabled:
+            return RedirectResponse("/", status_code=303)
+        form = await request.form()
+        target = auth.safe_next(str(form.get("next", "/")))
+        now = clock().timestamp()
+        if limiter.blocked(now):
+            return login_page(request, target, "Too many attempts. Try again in a few minutes.", 429)
+        supplied = str(form.get("password", "")).encode()
+        if not secrets.compare_digest(supplied, settings.ui_password.encode()):
+            limiter.record_failure(now)
+            return login_page(request, target, "Wrong password.", 401)
+        max_age = settings.session_days * 86400
+        response = RedirectResponse(target, status_code=303)
+        response.set_cookie(auth.COOKIE, auth.sign(secret, settings.ui_password, int(now) + max_age),
+                            max_age=max_age, path="/", httponly=True, samesite="strict")
+        return response
+
+    @app.post("/logout")
+    def logout(request: Request):
+        check_hx_request(request)
+        response = Response(status_code=204, headers={"HX-Redirect": "/login"})
+        response.delete_cookie(auth.COOKIE, path="/", httponly=True, samesite="strict")
+        return response
+
     dd_router = deepdive_routes.make_router(
         settings=settings, conn=conn, templates=templates, clock=clock, start_render=start_render,
         check_token=check_token, check_hx_request=check_hx_request,
     )
     app.include_router(dd_router)
+    app.include_router(share_routes.make_router(settings=settings, conn=conn, templates=templates,
+                                                episode_view=dd_router.episode_view))
 
     app.include_router(daily_routes.make_router(
         settings=settings, conn=conn, clock=clock, check_worker=dd_router.check_worker,
@@ -219,6 +283,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
             "month_cost": month_cost(),
             "last_run": f"{last['status']} {_local(last['started_at'])}" if last else None,
             "claude_offline": settings.claude_offline,
+            "login_enabled": settings.login_enabled,
         })
 
     @app.get("/partials/today", response_class=HTMLResponse)

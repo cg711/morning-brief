@@ -59,3 +59,11 @@ button.danger { color: var(--danger); }
 .checks label, .defaults label { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; }
 .tags { display: flex; gap: 6px; margin: 4px 0 0; }
 .tag { font-size: .75rem; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--muted); }
+
+.topbar { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+.small-button { min-height: 36px; padding: 4px 12px; font-size: .9rem; }
+.login { max-width: 360px; }
+.login input { width: 100%; box-sizing: border-box; font: inherit; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
+.share { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+.share .copy { display: flex; gap: 8px; flex: 1 1 260px; }
+.share-url { flex: 1; min-width: 0; font: inherit; font-size: .9rem; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }

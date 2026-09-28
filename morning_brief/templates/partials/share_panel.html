@@ -1,0 +1,12 @@
+{% if ep.shared %}
+  <div class="share">
+    <span class="badge">Shared</span>
+    {% if ep.share_url %}
+      <div class="copy">
+        <input id="share-{{ ep.id }}" class="share-url" readonly value="{{ ep.share_url }}" aria-label="Share link">
+        <button type="button" data-copy="share-{{ ep.id }}">Copy</button>
+      </div>
+    {% endif %}
+    <button hx-post="/deep-dives/{{ ep.id }}/unshare" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Revoke this link? Anyone who has it will lose access.">Revoke link</button>
+  </div>
+{% endif %}
