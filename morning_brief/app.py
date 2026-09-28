@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, notify, pipeline, podcast, retention, scheduler, share_routes
+from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, inbox_routes, notify, pipeline, podcast, retention, scheduler, share_routes
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
@@ -178,6 +178,8 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     app.include_router(dd_router)
     app.include_router(share_routes.make_router(settings=settings, conn=conn, templates=templates,
                                                 episode_view=dd_router.episode_view))
+
+    app.include_router(inbox_routes.make_router(settings=settings, conn=conn, clock=clock))
 
     app.include_router(daily_routes.make_router(
         settings=settings, conn=conn, clock=clock, check_worker=dd_router.check_worker,

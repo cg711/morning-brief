@@ -75,6 +75,7 @@ class Settings:
     session_days: int = 90
     share_base_url: str = ""
     funnel_feeds: bool = False
+    inbox_token: str = field(default="", repr=False)
 
     @property
     def db_path(self) -> Path:
@@ -122,6 +123,9 @@ class Settings:
         worker_token = env.get("WORKER_TOKEN", "")
         if worker_token and len(worker_token) < 32:
             raise ConfigError("WORKER_TOKEN must be at least 32 characters (or empty to disable the worker API)")
+        inbox_token = env.get("INBOX_TOKEN", "").strip()
+        if inbox_token and len(inbox_token) < 32:
+            raise ConfigError("INBOX_TOKEN must be at least 32 characters (or empty to turn the inbox off)")
         ntfy_topic = env.get("NTFY_TOPIC", "").strip()
         if ntfy_topic and not NTFY_TOPIC_RE.match(ntfy_topic):
             raise ConfigError(
@@ -179,4 +183,5 @@ class Settings:
             session_days=int(days_raw),
             share_base_url=share_base_url,
             funnel_feeds=env.get("FUNNEL_FEEDS", "0") == "1",
+            inbox_token=inbox_token,
         )

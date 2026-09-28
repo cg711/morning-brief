@@ -148,3 +148,11 @@ def test_share_base_url_must_be_https():
 def test_share_base_url_must_have_a_host():
     with pytest.raises(ConfigError, match="SHARE_BASE_URL"):
         Settings.from_env({"FEED_TOKEN": "x" * 32, "SHARE_BASE_URL": "https://"})
+
+
+def test_inbox_token():
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32, "INBOX_TOKEN": "i" * 32})
+    assert s.inbox_token == "i" * 32 and "iiii" not in repr(s)
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32}).inbox_token == ""
+    with pytest.raises(ConfigError, match="INBOX_TOKEN must be at least 32 characters"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "INBOX_TOKEN": "short"})
