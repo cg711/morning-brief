@@ -111,3 +111,40 @@ def test_personal_settings():
     assert "pw-secret" not in repr(s)
     with pytest.raises(ConfigError, match="ACTUAL_SERVER_URL needs ACTUAL_PASSWORD and ACTUAL_SYNC_ID"):
         Settings.from_env({**base, "ACTUAL_SERVER_URL": "https://x:5006", "ACTUAL_PASSWORD": "pw"})
+
+
+def test_login_and_share_settings():
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32, "UI_PASSWORD": "hunter2 horse", "SESSION_DAYS": "30",
+                           "SHARE_BASE_URL": " https://box.example.ts.net/ ", "FUNNEL_FEEDS": "1"})
+    assert s.ui_password == "hunter2 horse" and s.login_enabled is True
+    assert s.session_days == 30
+    assert s.share_base_url == "https://box.example.ts.net"
+    assert s.funnel_feeds is True
+    assert "hunter2" not in repr(s)
+
+
+def test_login_and_share_defaults():
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32})
+    assert s.ui_password == "" and s.login_enabled is False
+    assert s.session_days == 90 and s.share_base_url == "" and s.funnel_feeds is False
+
+
+@pytest.mark.parametrize("days", ["0", "366", "-5", "abc", "1.5"])
+def test_session_days_bounds(days):
+    with pytest.raises(ConfigError, match="SESSION_DAYS"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "SESSION_DAYS": days})
+
+
+def test_session_days_edges_accepted():
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32, "SESSION_DAYS": "1"}).session_days == 1
+    assert Settings.from_env({"FEED_TOKEN": "x" * 32, "SESSION_DAYS": "365"}).session_days == 365
+
+
+def test_share_base_url_must_be_https():
+    with pytest.raises(ConfigError, match="SHARE_BASE_URL"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "SHARE_BASE_URL": "http://box.example.ts.net"})
+
+
+def test_share_base_url_must_have_a_host():
+    with pytest.raises(ConfigError, match="SHARE_BASE_URL"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "SHARE_BASE_URL": "https://"})

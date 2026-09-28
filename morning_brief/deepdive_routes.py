@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import db, deepdives, podcast
+from . import db, deepdives, podcast, shares
 from .config import TZ
 
 log = logging.getLogger(__name__)
@@ -177,6 +177,7 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
 
     def section_view(error: str | None = None) -> dict:
         rows = deepdives.list_topics(conn)
+        live = shares.live_tokens(conn)
         long_ids = {r["id"] for r in deepdives.long_running(conn, clock())}
         followed: dict[int, set[int]] = {}
         for row in rows:
@@ -186,7 +187,11 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         for row in rows:
             status = row["status"]
             if status in ("ready", "heard"):
-                groups[status].append(episode(row, frozenset(followed.get(row["id"], ()))))
+                ep = episode(row, frozenset(followed.get(row["id"], ())))
+                token = live.get(row["id"])
+                ep["shared"] = token is not None
+                ep["share_url"] = f"{settings.share_base_url}/s/{token}" if token and settings.share_base_url else None
+                groups[status].append(ep)
             elif status in ("researching", "speaking"):
                 groups["in_progress"].append({"id": row["id"], "topic": row["topic"], "status": status,
                                               "minutes": _minutes_since(row["updated_at"]),
@@ -203,7 +208,8 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
                 "empty": not any(groups.values()) and not suggestions,
                 "sig": _sig(rows, long_ids), "worker": worker_view(),
                 "suggestions": suggestions,
-                "defaults": deepdives.get_defaults(conn)}
+                "defaults": deepdives.get_defaults(conn),
+                "sharing": bool(settings.share_base_url)}
 
     def render_section(request: Request, error: str | None = None, view: dict | None = None):
         return templates.TemplateResponse(request, "partials/deep_dives.html", {"dd": view or section_view(error)})
@@ -281,6 +287,19 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
         deepdives.dismiss_suggestion(conn, suggestion_id)
         return render_section(request)
 
+    @router.post("/deep-dives/{topic_id}/share")
+    def share(topic_id: int, request: Request):
+        check_hx_request(request)
+        if not settings.share_base_url or shares.create_or_get(conn, topic_id, clock()) is None:
+            raise HTTPException(404)
+        return render_section(request)
+
+    @router.post("/deep-dives/{topic_id}/unshare")
+    def unshare(topic_id: int, request: Request):
+        check_hx_request(request)
+        shares.revoke(conn, topic_id, clock())
+        return render_section(request)
+
     @router.delete("/deep-dives/{topic_id}")
     def delete(topic_id: int, request: Request):
         check_hx_request(request)
@@ -289,5 +308,6 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
 
     router.section_view = section_view
     router.check_worker = check_worker
+    router.episode_view = episode
 
     return router

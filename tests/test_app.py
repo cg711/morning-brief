@@ -134,11 +134,11 @@ def test_cover_served(client):
     assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
 
 
-def test_funnel_requests_only_reach_feed_and_audio(client):
+def test_funnel_requests_do_not_reach_the_ui_or_feeds(client):
     funnel = {"Tailscale-Funnel-Request": "?1"}
     assert client.get("/", headers=funnel).status_code == 404
     assert client.post("/generate", headers=funnel).status_code == 404
-    assert client.get(f"/feed/{TOKEN}.xml", headers=funnel).status_code == 200
+    assert client.get(f"/feed/{TOKEN}.xml", headers=funnel).status_code == 404
 
 
 def test_month_cost_in_footer(client, app_conn):

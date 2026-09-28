@@ -11,6 +11,7 @@
 </head>
 <body>
   <main class="wrap">
+    {% if login_enabled %}<div class="topbar"><button type="button" class="small-button" hx-post="/logout">Log out</button></div>{% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

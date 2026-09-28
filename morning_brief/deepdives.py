@@ -249,6 +249,7 @@ def move_to_top(conn, topic_id: int, now: datetime) -> bool:
 
 def delete_topic(conn, directory: Path, topic_id: int) -> bool:
     with _write_lock:
+        conn.execute("DELETE FROM shares WHERE topic_id = ?", (topic_id,))
         existed = conn.execute("DELETE FROM topics WHERE id = ?", (topic_id,)).rowcount > 0
     audio_path(directory, topic_id).unlink(missing_ok=True)
     return existed
@@ -433,7 +434,7 @@ def mark_long_notified(conn, topic_id: int, status: str) -> bool:
 
 
 def housekeeping(conn, directory: Path, now: datetime) -> dict:
-    """Auto-heard after 7 days, delete heard after 30, release stale claims, remove stray temp files."""
+    """Auto-heard after 7 days, delete heard after 30 (unless shared), release stale claims, remove stray temp files."""
     auto_heard = 0
     for row in conn.execute(
         "SELECT t.id FROM topics t JOIN deep_dives d ON d.topic_id = t.id "
@@ -442,7 +443,9 @@ def housekeeping(conn, directory: Path, now: datetime) -> dict:
         auto_heard += mark_heard(conn, row["id"], now)
     old = [r["id"] for r in conn.execute(
         "SELECT t.id FROM topics t JOIN deep_dives d ON d.topic_id = t.id "
-        "WHERE t.status = 'heard' AND d.heard_at < ?", (_iso(now - KEEP_HEARD_FOR),)
+        "WHERE t.status = 'heard' AND d.heard_at < ? "
+        "AND NOT EXISTS (SELECT 1 FROM shares s WHERE s.topic_id = t.id AND s.revoked_at IS NULL)",
+        (_iso(now - KEEP_HEARD_FOR),)
     ).fetchall()]
     for topic_id in old:
         delete_topic(conn, directory, topic_id)

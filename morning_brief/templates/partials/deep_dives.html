@@ -28,9 +28,11 @@
       <audio controls preload="none" id="player-{{ ep.id }}" hx-preserve src="{{ ep.audio_url }}"></audio>
       <p class="meta">{{ ep.duration }} · {{ ep.topic }}</p>
       {% include "partials/deep_dive_transcript.html" %}
+      {% include "partials/share_panel.html" %}
       <div class="actions">
         <button hx-post="/deep-dives/{{ ep.id }}/heard" hx-target="#deep-dives" hx-swap="outerHTML">Mark heard</button>
-        <button class="danger" hx-delete="/deep-dives/{{ ep.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this deep dive?">Delete</button>
+        {% if dd.sharing and not ep.shared %}<button hx-post="/deep-dives/{{ ep.id }}/share" hx-target="#deep-dives" hx-swap="outerHTML">Share</button>{% endif %}
+        <button class="danger" hx-delete="/deep-dives/{{ ep.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this deep dive?{% if ep.shared %} This also kills its share link.{% endif %}">Delete</button>
       </div>
     </article>
   {% endfor %}
@@ -99,8 +101,10 @@
           <div class="row-head"><h3>{{ ep.title }}</h3><span class="meta">{{ ep.duration }} · Heard {{ ep.heard_date }}</span></div>
           <audio controls preload="none" id="player-{{ ep.id }}" hx-preserve src="{{ ep.audio_url }}"></audio>
           {% include "partials/deep_dive_transcript.html" %}
+          {% include "partials/share_panel.html" %}
           <div class="actions">
-            <button class="danger" hx-delete="/deep-dives/{{ ep.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this deep dive?">Delete</button>
+            {% if dd.sharing and not ep.shared %}<button hx-post="/deep-dives/{{ ep.id }}/share" hx-target="#deep-dives" hx-swap="outerHTML">Share</button>{% endif %}
+            <button class="danger" hx-delete="/deep-dives/{{ ep.id }}" hx-target="#deep-dives" hx-swap="outerHTML" hx-confirm="Delete this deep dive?{% if ep.shared %} This also kills its share link.{% endif %}">Delete</button>
           </div>
         </article>
       {% endfor %}

@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 DEFAULT_TZ = "America/Chicago"
@@ -70,6 +71,10 @@ class Settings:
     actual_sync_id: str = ""
     actual_encryption_password: str = field(default="", repr=False)
     actual_tls_verify: str = "1"
+    ui_password: str = field(default="", repr=False)
+    session_days: int = 90
+    share_base_url: str = ""
+    funnel_feeds: bool = False
 
     @property
     def db_path(self) -> Path:
@@ -99,6 +104,11 @@ class Settings:
     @property
     def actual_configured(self) -> bool:
         return bool(self.actual_server_url and self.actual_password and self.actual_sync_id)
+
+    @property
+    def login_enabled(self) -> bool:
+        """UI_PASSWORD is set, so the web UI asks for it."""
+        return bool(self.ui_password)
 
     @classmethod
     def from_env(cls, env=None) -> Settings:
@@ -130,6 +140,14 @@ class Settings:
         actual_sync_id = env.get("ACTUAL_SYNC_ID", "").strip()
         if actual_url and not (actual_password and actual_sync_id):
             raise ConfigError("ACTUAL_SERVER_URL needs ACTUAL_PASSWORD and ACTUAL_SYNC_ID")
+        days_raw = env.get("SESSION_DAYS", "90").strip()
+        if not (days_raw.isascii() and days_raw.isdigit() and 1 <= int(days_raw) <= 365):
+            raise ConfigError("SESSION_DAYS must be a whole number of days from 1 to 365")
+        share_base_url = env.get("SHARE_BASE_URL", "").strip().rstrip("/")
+        if share_base_url and not share_base_url.startswith("https://"):
+            raise ConfigError("SHARE_BASE_URL must be an https:// URL (your Funnel address), or empty to turn sharing off")
+        if share_base_url and not urlsplit(share_base_url).hostname:
+            raise ConfigError("SHARE_BASE_URL must be an https:// URL (your Funnel address), or empty to turn sharing off")
         return cls(
             data_dir=Path(env.get("DATA_DIR", "data")),
             feed_token=token,
@@ -157,4 +175,8 @@ class Settings:
             actual_sync_id=actual_sync_id,
             actual_encryption_password=env.get("ACTUAL_ENCRYPTION_PASSWORD", ""),
             actual_tls_verify=env.get("ACTUAL_TLS_VERIFY", "1").strip() or "1",
+            ui_password=env.get("UI_PASSWORD", ""),
+            session_days=int(days_raw),
+            share_base_url=share_base_url,
+            funnel_feeds=env.get("FUNNEL_FEEDS", "0") == "1",
         )
