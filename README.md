@@ -116,6 +116,8 @@ In worker mode the daily brief can open with a short "Your morning" segment: las
 
 Each source is optional; if one can't be reached, that part is simply left out. Privacy: these numbers and payee names go to your Mac worker's Claude session and into the episode audio and transcript on your own server. It isn't included in the podcast feed's episode notes. The Mac keeps the latest claim (with these facts) in its cache folder, and each morning's run overwrites it.
 
+It also covers today's **weather** (from [Open-Meteo](https://open-meteo.com), free and keyless, for `LISTENER_LOCATION`; set `WEATHER_LAT`/`WEATHER_LON` if the name resolves to the wrong place) and today's **calendar**. The calendar comes from `GET {OURA_DASHBOARD_URL}/api/agenda?date=YYYY-MM-DD`. Any service can provide it by answering `{"date", "connected": true, "events": [{"title", "start", "end", "all_day", "calendar"}]}`, with ISO times that include an offset. Up to five upcoming events and three all-day items are read out. Event titles, like payee names, go to your Mac worker's Claude session and into the episode audio and transcript.
+
 ## Send from your phone (optional)
 
 Share a link or some text from any iPhone app to a **Morning Brief** Shortcut. It asks for an optional note and whether to put the topic at the top or the end of the queue, then adds a deep dive with your page defaults. Set `INBOX_TOKEN`, then follow [shortcuts/README.md](shortcuts/README.md). The endpoint is `POST /api/inbox`; like the rest of `/api/`, it's reachable only on your tailnet and never through Funnel.

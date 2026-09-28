@@ -26,7 +26,7 @@ curl -s -o {{CACHE_DIR}}/daily-claim.json -w '%{http_code}' --connect-timeout 10
 
 - `204`: nothing to do. Reply `No daily brief to write.` and stop. Use no other tools.
 - `000` or a connection error: reply `server unreachable.` and stop.
-- `200`: read `{{CACHE_DIR}}/daily-claim.json`: `{"date": "…", "today": "Monday, September 28, 2026", "location": "…", "now": "…", "previous_headlines": [...], "target_words": 550, "personal": {"sleep": {...}, "tip": {...}, "spending": {...}} or null, "candidates": [{"id", "segment", "source", "published", "text": "feed|page|summary", "title", "summary", "url"}]}`. Below, `<date>` is that `date`.
+- `200`: read `{{CACHE_DIR}}/daily-claim.json`: `{"date": "…", "today": "Monday, September 28, 2026", "location": "…", "now": "…", "previous_headlines": [...], "target_words": 550, "personal": {"weather": {...}, "calendar": {...}, "sleep": {...}, "tip": {...}, "spending": {...}} or null, "candidates": [{"id", "segment", "source", "published", "text": "feed|page|summary", "title", "summary", "url"}]}`. Below, `<date>` is that `date`.
 - Anything else: reply with the code and stop.
 
 ## 2. Pick the stories
@@ -54,8 +54,10 @@ For each picked candidate:
 
 ## Your morning (only when `personal` isn't null)
 
-Before the news, write one extra segment and put it **first** in `segments`: `{"segment": "personal", "headline": "Your morning", "text": "…", "item_ids": []}`, 40 to 80 words (the server accepts 20 to 100 words).
-- Open with "First, you." Use only the facts in `personal`; skip any part that is missing, and add no advice beyond the tip.
+Before the news, write one extra segment and put it **first** in `segments`: `{"segment": "personal", "headline": "Your morning", "text": "…", "item_ids": []}`, 60 to 130 words (the server accepts 20 to 160 words).
+- Open with "First, you." Then cover, in this order and skipping any part that is missing: weather, calendar, sleep and readiness, the tip, spending. Use only the facts in `personal`, and add no advice beyond the one weather nudge and the tip.
+- `weather`: say `conditions`, the high and the low ("cloudy, a high of fifty-eight and a low of forty-one"). If `precip` is set, say when rain or snow gets likely ("rain likely after three"). Add at most one short practical nudge, and only when `precip`, `windy`, `hot` or `cold` is set (for example "take a jacket if you're out late").
+- `calendar`: say the timed `events` in order as time then title ("standup at nine thirty, lunch with Sam at noon"). An event whose `calendar` is "Oura" is a suggestion ("and the Oura calendar suggests a walk at three"). If `more` is above 0, add "and N more". Mention `all_day` titles briefly. If `events` and `all_day` are both empty, say it's a clear calendar today. Never guess what an event is about.
 - `sleep`: say the hours as hours and minutes, and the sleep score and readiness as plain numbers. For `hrv_balance`, say it's "balanced" when it's 80 or more and "a bit low" when it's under 70; otherwise don't mention it.
 - `tip`: say the tip's title and the gist of its detail in your own words.
 - `spending`: round to whole dollars and say the number of purchases and the biggest one with its payee. If `count` is 0, say there were no purchases yesterday.
@@ -81,7 +83,7 @@ Save it as JSON to `{{CACHE_DIR}}/script-daily-<date>.json` in exactly this shap
 }
 ```
 
-Rules the server enforces: 300 to 750 words in total; 1 to 8 segments; `segment` is one of headlines, tech, business, local; every segment has a non-empty `headline` (headlines at most 200 characters) and `text` and cites at least one candidate id from the claim; no control characters; an optional first "personal" segment (only when the claim had personal data) of 20 to 100 words that cites no ids, and it doesn't count toward the 300 to 750.
+Rules the server enforces: 300 to 750 words in total; 1 to 8 segments; `segment` is one of headlines, tech, business, local; every segment has a non-empty `headline` (headlines at most 200 characters) and `text` and cites at least one candidate id from the claim; no control characters; an optional first "personal" segment (only when the claim had personal data) of 20 to 160 words that cites no ids, and it doesn't count toward the 300 to 750.
 
 Count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-daily-<date>.json')); print(sum(len(t.split()) for t in [s['intro'], *[x['text'] for x in s['segments']], s['outro']]))"`.
 

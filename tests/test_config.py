@@ -156,3 +156,20 @@ def test_inbox_token():
     assert Settings.from_env({"FEED_TOKEN": "x" * 32}).inbox_token == ""
     with pytest.raises(ConfigError, match="INBOX_TOKEN must be at least 32 characters"):
         Settings.from_env({"FEED_TOKEN": "x" * 32, "INBOX_TOKEN": "short"})
+
+
+def test_weather_override():
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32, "WEATHER_LAT": "44.98", "WEATHER_LON": " -93.27 "})
+    assert (s.weather_lat, s.weather_lon) == (44.98, -93.27)
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32})
+    assert (s.weather_lat, s.weather_lon) == (None, None)
+
+
+@pytest.mark.parametrize("env", [{"WEATHER_LAT": "44.98"}, {"WEATHER_LON": "-93.27"},
+                                 {"WEATHER_LAT": "north", "WEATHER_LON": "-93.27"},
+                                 {"WEATHER_LAT": "95", "WEATHER_LON": "-93.27"},
+                                 {"WEATHER_LAT": "44.98", "WEATHER_LON": "-181"},
+                                 {"WEATHER_LAT": "nan", "WEATHER_LON": "-93.27"}])
+def test_weather_override_rejected(env):
+    with pytest.raises(ConfigError, match="WEATHER_LAT"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, **env})

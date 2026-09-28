@@ -31,7 +31,7 @@ HEADLINE_MAX = 200
 MAX_PER_SEGMENT = 15
 PERSONAL = "personal"
 PERSONAL_HEADLINE = "Your morning"
-PERSONAL_MIN_WORDS, PERSONAL_MAX_WORDS = 20, 100
+PERSONAL_MIN_WORDS, PERSONAL_MAX_WORDS = 20, 160
 _lock = threading.RLock()  # job transitions on the shared connection
 _gather_lock = threading.Lock()  # one gather at a time; independent of the Kokoro run_lock
 
