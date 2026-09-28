@@ -50,6 +50,15 @@ def test_describe_lists_sources():
     assert "NPR: Big news (https://example.com/a1)" in text
 
 
+def test_describe_leaves_out_the_personal_segment():
+    script = script_with_words(20)
+    script["segments"].insert(0, {"segment": "personal", "headline": "Your morning",
+                                  "text": "You slept six hours and spent forty dollars at Target.", "item_ids": []})
+    text = describe(script, [])
+    assert "Your morning" not in text and "Target" not in text
+    assert "Big news" in text and text.startswith("Good morning.")
+
+
 def deep_episode(updated_at="2026-09-25T15:00:00+00:00"):
     return {"id": 7, "title": "How the Fed Began", "published_at": "2026-09-25T14:00:00+00:00",
             "updated_at": updated_at, "audio_bytes": 9, "duration_s": 1210.6, "description": "notes"}

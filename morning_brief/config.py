@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -63,6 +63,13 @@ class Settings:
     ntfy_topic: str = ""
     ntfy_server: str = "https://ntfy.sh"
     music: bool = True
+    personal_segment: bool = False
+    oura_dashboard_url: str = ""
+    actual_server_url: str = ""
+    actual_password: str = field(default="", repr=False)
+    actual_sync_id: str = ""
+    actual_encryption_password: str = field(default="", repr=False)
+    actual_tls_verify: str = "1"
 
     @property
     def db_path(self) -> Path:
@@ -89,6 +96,10 @@ class Settings:
         """The daily brief is written by the Mac worker (DAILY_BRIEF=worker)."""
         return self.daily_brief and self.daily_mode == "worker"
 
+    @property
+    def actual_configured(self) -> bool:
+        return bool(self.actual_server_url and self.actual_password and self.actual_sync_id)
+
     @classmethod
     def from_env(cls, env=None) -> Settings:
         env = os.environ if env is None else env
@@ -114,6 +125,11 @@ class Settings:
         daily_mode = {"0": "off", "1": "api", "api": "api", "worker": "worker"}.get(daily_raw)
         if daily_mode is None:
             raise ConfigError("DAILY_BRIEF must be 0, 1, api or worker")
+        actual_url = env.get("ACTUAL_SERVER_URL", "").strip().rstrip("/")
+        actual_password = env.get("ACTUAL_PASSWORD", "")
+        actual_sync_id = env.get("ACTUAL_SYNC_ID", "").strip()
+        if actual_url and not (actual_password and actual_sync_id):
+            raise ConfigError("ACTUAL_SERVER_URL needs ACTUAL_PASSWORD and ACTUAL_SYNC_ID")
         return cls(
             data_dir=Path(env.get("DATA_DIR", "data")),
             feed_token=token,
@@ -134,4 +150,11 @@ class Settings:
             ntfy_topic=ntfy_topic,
             ntfy_server=ntfy_server,
             music=env.get("MUSIC", "1") != "0",
+            personal_segment=env.get("PERSONAL_SEGMENT", "0") == "1",
+            oura_dashboard_url=env.get("OURA_DASHBOARD_URL", "").strip().rstrip("/"),
+            actual_server_url=actual_url,
+            actual_password=actual_password,
+            actual_sync_id=actual_sync_id,
+            actual_encryption_password=env.get("ACTUAL_ENCRYPTION_PASSWORD", ""),
+            actual_tls_verify=env.get("ACTUAL_TLS_VERIFY", "1").strip() or "1",
         )

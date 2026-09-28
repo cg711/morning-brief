@@ -108,6 +108,14 @@ Two ways to have a daily ~5-minute news brief:
 
 Either way, pick your `LISTENER_LOCATION` and replace the `local` feeds in `feeds.yaml`, which default to Minneapolis. Each brief cites only stories from your feeds, names its sources out loud, and is checked before speaking: 300–750 words, and every story must cite a real item.
 
+## Personal segment (optional)
+
+In worker mode the daily brief can open with a short "Your morning" segment: last night's sleep and readiness and today's tip from an Oura dashboard service (`OURA_DASHBOARD_URL`, which must serve `GET /api/state`), and yesterday's spending from Actual Budget (`ACTUAL_SERVER_URL`, `ACTUAL_PASSWORD`, `ACTUAL_SYNC_ID`; see `.env.example`). Turn it on with `PERSONAL_SEGMENT=1`, then check the connections with:
+
+    docker compose exec morning-brief python -m morning_brief.personal --check
+
+Each source is optional; if one can't be reached, that part is simply left out. Privacy: these numbers and payee names go to your Mac worker's Claude session and into the episode audio and transcript on your own server. It isn't included in the podcast feed's episode notes. The Mac keeps the latest claim (with these facts) in its cache folder, and each morning's run overwrites it.
+
 ## Customizing
 
 | Setting | Where | Notes |

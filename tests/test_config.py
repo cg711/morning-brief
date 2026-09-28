@@ -98,3 +98,16 @@ def test_daily_brief_invalid_and_ready_by():
         Settings.from_env({"FEED_TOKEN": "x" * 32, "DAILY_BRIEF": "yes"})
     assert Settings.from_env({"FEED_TOKEN": "x" * 32}).ready_by == time(8, 30)
     assert Settings.from_env({"FEED_TOKEN": "x" * 32, "READY_BY": "09:05"}).ready_by == time(9, 5)
+
+
+def test_personal_settings():
+    base = {"FEED_TOKEN": "x" * 32}
+    s = Settings.from_env(base)
+    assert (s.personal_segment, s.oura_dashboard_url, s.actual_configured, s.actual_tls_verify) == (False, "", False, "1")
+    s = Settings.from_env({**base, "PERSONAL_SEGMENT": "1", "OURA_DASHBOARD_URL": "http://172.17.0.1:8090/",
+                           "ACTUAL_SERVER_URL": "https://172.17.0.1:5006", "ACTUAL_PASSWORD": "pw-secret",
+                           "ACTUAL_SYNC_ID": "sync-1", "ACTUAL_TLS_VERIFY": "0"})
+    assert s.personal_segment and s.oura_dashboard_url == "http://172.17.0.1:8090" and s.actual_configured
+    assert "pw-secret" not in repr(s)
+    with pytest.raises(ConfigError, match="ACTUAL_SERVER_URL needs ACTUAL_PASSWORD and ACTUAL_SYNC_ID"):
+        Settings.from_env({**base, "ACTUAL_SERVER_URL": "https://x:5006", "ACTUAL_PASSWORD": "pw"})

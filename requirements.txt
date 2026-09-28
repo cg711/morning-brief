@@ -12,3 +12,4 @@ lameenc==1.8.4
 numpy==2.5.3
 tzdata==2026.4
 python-multipart==0.0.32
+actualpy==0.22.3

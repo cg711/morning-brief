@@ -335,3 +335,83 @@ def test_speak_and_publish_lock_timeout(conn, settings):
     assert naps == [1, 1]
     job = daily_worker.get_job(conn, date)
     assert job["status"] == "failed" and "speech lock busy" in job["error"]
+
+
+from morning_brief import personal as personal_mod
+
+
+def personal_seg(words=50, **extra):
+    return {"segment": "personal", "headline": "Morning", "text": " ".join(["well"] * words), **extra}
+
+
+def test_gather_stores_personal_and_claim_returns_it(conn, settings, monkeypatch):
+    facts = {"sleep": {"sleep_score": 67, "hours": 6.1, "readiness": 85, "hrv_balance": 82}}
+    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now: facts)
+    gathered(conn, settings)
+    assert daily_worker.claim(conn, NOW, "Minneapolis")["personal"] == facts
+
+
+def test_claim_personal_is_null_when_off(conn, settings):
+    gathered(conn, settings)
+    assert daily_worker.claim(conn, NOW, "Minneapolis")["personal"] is None
+
+
+def test_validate_personal_segment():
+    known = {"a"}
+    news = script_for(["a"])
+    ok = {**news, "segments": [personal_seg(), *news["segments"]]}
+    assert daily_worker.validate_submission(ok, known, personal_allowed=True) == []
+    assert daily_worker.validate_submission(news, known, personal_allowed=True) == []  # optional
+    assert any("no personal data" in p for p in daily_worker.validate_submission(ok, known))
+    late = {**news, "segments": [*news["segments"], personal_seg()]}
+    assert any("must be the first segment" in p for p in daily_worker.validate_submission(late, known, personal_allowed=True))
+    twice = {**news, "segments": [personal_seg(), personal_seg(), *news["segments"]]}
+    assert any("must be the first segment" in p for p in daily_worker.validate_submission(twice, known, personal_allowed=True))
+    for bad in (personal_seg(10), personal_seg(120), personal_seg(item_ids=["a"]), {**personal_seg(), "text": "hi\x07 " * 30}):
+        script = {**news, "segments": [bad, *news["segments"]]}
+        assert any("personal" in p for p in daily_worker.validate_submission(script, known, personal_allowed=True)), bad
+
+
+def test_personal_words_do_not_count_toward_news_range():
+    news = script_for(["a"], words=740)
+    with_personal = {**news, "segments": [personal_seg(90), *news["segments"]]}
+    assert daily_worker.validate_submission(with_personal, {"a"}, personal_allowed=True) == []
+
+
+def test_accept_forces_personal_headline(conn, settings, monkeypatch):
+    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now: {"tip": {"title": "t", "detail": "d"}})
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    news = script_for([item_id(COUNCIL)])
+    assert daily_worker.accept(conn, date, {**news, "segments": [personal_seg(item_ids=None), *news["segments"]]}, NOW)
+    stored = json.loads(daily_worker.get_job(conn, date)["script_json"])["segments"][0]
+    assert stored == {"segment": "personal", "headline": "Your morning", "text": personal_seg()["text"], "item_ids": []}
+
+
+def test_gather_survives_personal_failure(conn, settings, monkeypatch):
+    def boom(s, http, now):
+        raise ValueError("bad data")
+
+    monkeypatch.setattr(personal_mod, "gather_personal", boom)
+    date = gathered(conn, settings)
+    assert daily_worker.get_job(conn, date)["personal_json"] is None
+    assert daily_worker.claim(conn, NOW, "Minneapolis")["personal"] is None
+
+
+def test_news_problems_are_numbered_as_news_after_a_personal_segment():
+    news = script_for(["a"])
+    news["segments"][0]["headline"] = ""
+    problems = daily_worker.validate_submission({**news, "segments": [personal_seg(), *news["segments"]]}, {"a"},
+                                                personal_allowed=True)
+    assert problems == ["news segment 1 needs a non-empty 'headline'"]
+    assert daily_worker.validate_submission(news, {"a"}, personal_allowed=True) == \
+        ["segment 1 needs a non-empty 'headline'"]
+
+
+def test_previous_headlines_leave_out_your_morning(conn, settings):
+    seed_episode(conn, settings, "2026-09-24")
+    script = script_for(["a1"])
+    script["segments"].insert(0, {"segment": "personal", "headline": "Your morning", "text": "well", "item_ids": []})
+    conn.execute("UPDATE episodes SET script_json = ? WHERE date = '2026-09-24'", (json.dumps(script),))
+    gathered(conn, settings)
+    assert daily_worker.claim(conn, NOW, "Minneapolis")["previous_headlines"] == ["Story 0"]
