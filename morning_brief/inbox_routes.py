@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import date
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from . import deepdives, inbox
+from . import deepdives, inbox, notes
+from .config import TZ
 
 ACTIVE_FOR_DUPLICATES = ("queued",) + deepdives.ACTIVE
 BAD_BODY = 'Send JSON with an "input" string.'
@@ -19,6 +21,33 @@ def _reply(status: int, message: str, **extra) -> JSONResponse:
 
 def make_router(*, settings, conn, clock) -> APIRouter:
     router = APIRouter()
+
+    def _save_note(body: dict, typed: str) -> JSONResponse:
+        if not (settings.worker_mode and settings.personal_segment):
+            return _reply(409, "Notes are off: they need DAILY_BRIEF=worker and PERSONAL_SEGMENT=1.")
+        raw = body.get("date", "")
+        if not isinstance(raw, str):
+            return _reply(422, "date must be YYYY-MM-DD.")
+        now = clock()
+        next_brief = notes.next_brief_date(now, settings.run_at)
+        try:
+            for_date = date.fromisoformat(raw.strip()) if raw.strip() else next_brief
+        except ValueError:
+            return _reply(422, "date must be YYYY-MM-DD.")
+        text, url = inbox.parse_note(body["input"])
+        text = " — ".join(part for part in (text, " ".join(typed.split())) if part)
+        if len(text) > notes.NOTE_TEXT_MAX:
+            cut = text[:notes.NOTE_TEXT_MAX - 1]
+            if " " in cut:
+                cut = cut.rsplit(" ", 1)[0]
+            text = cut.rstrip() + "…"
+        try:
+            note_id = notes.add_note(conn, text, url, for_date, now)
+        except notes.NoteError as exc:
+            return _reply(422, str(exc))
+        when = notes.day_name(max(for_date, next_brief), now.astimezone(TZ).date())
+        what = text if len(text) <= 80 else text[:79].rstrip() + "…"
+        return _reply(201, f"Saved for {when}'s brief: {what or notes.host(url)}", id=note_id, kind="note")
 
     @router.post("/api/inbox")
     async def receive(request: Request):
@@ -35,15 +64,18 @@ def make_router(*, settings, conn, clock) -> APIRouter:
                 or not isinstance(body.get("note", ""), str):
             return _reply(422, BAD_BODY)
         position = body.get("position", "end")
-        if position not in ("top", "end"):
-            return _reply(422, 'position must be "top" or "end".')
-        topic, url = inbox.parse_input(body["input"])
-        if not topic and not url:
-            return _reply(422, "Nothing to add: share a link or some text.")
+        if position not in ("top", "end", "brief"):
+            return _reply(422, 'position must be "top", "end" or "brief".')
         note = body.get("note", "").strip()
         # This duplicates add_topic's own NOTES_MAX check, on purpose, to give the phone a friendlier message.
         if len(note) > deepdives.NOTES_MAX:
             return _reply(422, f"The note is too long ({deepdives.NOTES_MAX} characters at most).")
+        if position == "brief":
+            return _save_note(body, note)
+
+        topic, url = inbox.parse_input(body["input"])
+        if not topic and not url:
+            return _reply(422, "Nothing to add: share a link or some text.")
 
         now = clock()
         with deepdives._write_lock:

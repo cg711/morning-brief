@@ -37,10 +37,20 @@ def test_build_structure():
     assert params["WFHTTPMethod"] == "POST" and params["WFHTTPBodyType"] == "JSON"
     keys = [item["WFKey"]["Value"]["string"]
             for item in params["WFJSONValues"]["Value"]["WFDictionaryFieldValueItems"]]
-    assert keys == ["input", "note", "position"]
+    assert keys == ["input", "note", "position", "date"]
     menu_titles = [a["WFWorkflowActionParameters"].get("WFMenuItemTitle") for a in wf["WFWorkflowActions"]
                    if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.choosefrommenu"]
-    assert "Top of queue" in menu_titles and "End of queue" in menu_titles
+    assert {"Top of queue", "End of queue", "Tomorrow's brief", "Pick a day…"} <= set(menu_titles)
+    ids = action_ids(wf)
+    assert "is.workflow.actions.format.date" in ids
+    fmt = next(a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.format.date")
+    assert fmt["WFWorkflowActionParameters"]["WFDateFormat"] == "yyyy-MM-dd"
+    asks = [a["WFWorkflowActionParameters"] for a in wf["WFWorkflowActions"]
+            if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.ask"]
+    assert any(p.get("WFInputType") == "Date" for p in asks)
+    menu = next(a for a in wf["WFWorkflowActions"] if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.choosefrommenu")
+    assert menu["WFWorkflowActionParameters"]["WFMenuItems"] == ["Top of queue", "End of queue", "Tomorrow's brief",
+                                                                 "Pick a day…"]
 
 
 def test_cli_rejects_a_bad_server_url(tmp_path):

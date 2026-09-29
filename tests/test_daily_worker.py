@@ -346,7 +346,7 @@ def personal_seg(words=50, **extra):
 
 def test_gather_stores_personal_and_claim_returns_it(conn, settings, monkeypatch):
     facts = {"sleep": {"sleep_score": 67, "hours": 6.1, "readiness": 85, "hrv_balance": 82}}
-    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now: facts)
+    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now, **kw: facts)
     gathered(conn, settings)
     assert daily_worker.claim(conn, NOW, "Minneapolis")["personal"] == facts
 
@@ -388,7 +388,7 @@ def test_personal_words_do_not_count_toward_news_range():
 
 
 def test_accept_forces_personal_headline(conn, settings, monkeypatch):
-    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now: {"tip": {"title": "t", "detail": "d"}})
+    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now, **kw: {"tip": {"title": "t", "detail": "d"}})
     date = gathered(conn, settings)
     daily_worker.claim(conn, NOW, "Minneapolis")
     news = script_for([item_id(COUNCIL)])
@@ -398,7 +398,7 @@ def test_accept_forces_personal_headline(conn, settings, monkeypatch):
 
 
 def test_gather_survives_personal_failure(conn, settings, monkeypatch):
-    def boom(s, http, now):
+    def boom(s, http, now, **kw):
         raise ValueError("bad data")
 
     monkeypatch.setattr(personal_mod, "gather_personal", boom)

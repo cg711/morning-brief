@@ -67,3 +67,10 @@ button.danger { color: var(--danger); }
 .share { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 .share .copy { display: flex; gap: 8px; flex: 1 1 260px; }
 .share-url { flex: 1; min-width: 0; font: inherit; font-size: .9rem; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
+
+.note-list { list-style: none; padding: 0; margin: 8px 0; }
+.note-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--border); }
+.note-list li:first-child { border-top: 0; }
+.note-list li > span:not(.badge) { flex: 1 1 200px; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.inline-form input { font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); flex: 1 1 160px; min-width: 0; }

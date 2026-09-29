@@ -82,11 +82,32 @@ def test_script_route_allows_personal_only_with_personal_data(api, monkeypatch):
     body = {**news, "segments": [personal_seg(), *news["segments"]]}
     bad = api.post(f"/api/daily/{date}/script", json=body, headers=AUTH)
     assert bad.status_code == 422 and any("no personal data" in p for p in bad.json()["problems"])
-    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now: {"tip": {"title": "t", "detail": "d"}})
+    monkeypatch.setattr(personal_mod, "gather_personal", lambda s, http, now, **kw: {"tip": {"title": "t", "detail": "d"}})
     api.post(f"/api/daily/{date}/fail", json={"reason": "retry"}, headers=AUTH)
     date = daily_worker.gather(api.app.state.settings, conn, feeds_http(), NOW, "manual")  # re-gather with personal data
     api.post("/api/daily/claim", headers=AUTH)
     assert api.post(f"/api/daily/{date}/script", json=body, headers=AUTH).status_code == 202
+
+
+def test_script_route_rejects_personal_with_only_notes_data(api, monkeypatch):
+    from morning_brief import personal as personal_mod
+    from tests.test_daily_worker import http as feeds_http, personal_seg
+    from tests.test_notes_flow import notes_seg
+    conn = api.app.state.conn
+    date = gathered(conn, api.app.state.settings)
+    api.post("/api/daily/claim", headers=AUTH)
+    news = script_for([item_id(COUNCIL)])
+    monkeypatch.setattr(personal_mod, "gather_personal",
+                        lambda s, http, now, **kw: {"notes": [{"id": 1, "text": "t", "url": None}]})
+    api.post(f"/api/daily/{date}/fail", json={"reason": "retry"}, headers=AUTH)
+    date = daily_worker.gather(api.app.state.settings, conn, feeds_http(), NOW, "manual")  # re-gather with notes only
+    api.post("/api/daily/claim", headers=AUTH)
+    with_personal = {**news, "segments": [personal_seg(), *news["segments"]]}
+    bad = api.post(f"/api/daily/{date}/script", json=with_personal, headers=AUTH)
+    assert bad.status_code == 422 and any("no personal data" in p for p in bad.json()["problems"])
+    with_notes = {**news, "segments": [notes_seg(), *news["segments"]]}
+    ok = api.post(f"/api/daily/{date}/script", json=with_notes, headers=AUTH)
+    assert ok.status_code == 202
 
 
 def test_restart_leaves_waiting_run_running_but_fails_speaking_job(settings):

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from morning_brief import deepdives, inbox_routes
+from morning_brief import notes as notes_mod
 from morning_brief.app import create_app
 from tests.helpers import NOW, deep_dive_script
 
@@ -16,6 +17,15 @@ LINK = "https://www.example.com/story"
 def api(settings):
     app = create_app(replace(settings, inbox_token=ITOKEN), clock=lambda: NOW, start_run=lambda t: True,
                      start_render=lambda t: None, start_scheduler=False)
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def brief_api(settings):
+    """Notes need worker mode and the personal segment on; the plain `api` fixture is off, on purpose."""
+    app = create_app(replace(settings, inbox_token=ITOKEN, daily_mode="worker", personal_segment=True),
+                     clock=lambda: NOW, start_run=lambda t: True, start_render=lambda t: None, start_scheduler=False)
     with TestClient(app) as c:
         yield c
 
@@ -130,7 +140,7 @@ def test_heard_link_can_be_queued_again(api):
     ({}, 'Send JSON with an "input" string.'),
     ({"input": "Topic", "note": 7}, 'Send JSON with an "input" string.'),
     ({"input": "Topic", "note": "n" * 501}, "The note is too long (500 characters at most)."),
-    ({"input": "Topic", "position": "middle"}, 'position must be "top" or "end".'),
+    ({"input": "Topic", "position": "middle"}, 'position must be "top", "end" or "brief".'),
 ])
 def test_bad_bodies(api, body, message):
     r = send(api, **body)
@@ -165,3 +175,72 @@ def test_inbox_needs_no_login(settings):
                      start_run=lambda t: True, start_render=lambda t: None, start_scheduler=False)
     with TestClient(app) as c:
         assert send(c, input="Topic").status_code == 201
+
+
+def test_brief_note_goes_to_next_brief(brief_api):
+    # NOW is 08:00 Central, after the default RUN_AT (08:00), so the next brief is tomorrow
+    r = send(brief_api, input="Call the dentist", position="brief")
+    assert r.status_code == 201 and r.json()["kind"] == "note"
+    assert r.json()["message"] == "Saved for tomorrow's brief: Call the dentist"
+    (row,) = notes_mod.pending_notes(conn_of(brief_api))
+    assert (row["text"], row["url"], row["for_date"]) == ("Call the dentist", None, "2026-09-26")
+    assert deepdives.list_topics(conn_of(brief_api)) == []
+
+
+def test_brief_note_off_returns_409(api):
+    r = send(api, input="Call the dentist", position="brief")
+    assert r.status_code == 409
+    assert r.json()["message"] == "Notes are off: they need DAILY_BRIEF=worker and PERSONAL_SEGMENT=1."
+    assert notes_mod.pending_notes(conn_of(api)) == []
+
+
+def test_brief_note_on_a_picked_day_with_link_and_typed_note(brief_api):
+    r = send(brief_api, input="Headline here\nhttps://www.example.com/story", note="read before the meeting",
+             position="brief", date="2026-10-05")
+    assert r.status_code == 201
+    assert r.json()["message"] == "Saved for Oct 5's brief: Headline here — read before the meeting"
+    (row,) = notes_mod.pending_notes(conn_of(brief_api))
+    assert (row["url"], row["for_date"]) == ("https://www.example.com/story", "2026-10-05")
+
+
+def test_brief_note_lone_link_names_the_site(brief_api):
+    r = send(brief_api, input="https://www.example.com/story", position="brief", date="")
+    assert r.status_code == 201 and r.json()["message"] == "Saved for tomorrow's brief: example.com"
+
+
+@pytest.mark.parametrize("day,message", [("2026-09-24", "pick today or a later day"),
+                                         ("next tuesday", "date must be YYYY-MM-DD."),
+                                         (5, "date must be YYYY-MM-DD.")])
+def test_brief_note_bad_dates(brief_api, day, message):
+    r = send(brief_api, input="x", position="brief", date=day)
+    assert r.status_code == 422 and r.json()["message"] == message
+    assert notes_mod.pending_notes(conn_of(brief_api)) == []
+
+
+def test_brief_note_with_empty_input_uses_the_typed_note(brief_api):
+    r = send(brief_api, input="", note="Call the dentist", position="brief")
+    assert r.status_code == 201
+    assert r.json()["message"] == "Saved for tomorrow's brief: Call the dentist"
+
+
+def test_brief_note_with_nothing_at_all_is_rejected(brief_api):
+    r = send(brief_api, input="  ", note="", position="brief")
+    assert r.status_code == 422 and r.json()["message"] == "write a note or share a link"
+    assert notes_mod.pending_notes(conn_of(brief_api)) == []
+
+
+def test_brief_note_long_text_is_truncated_in_the_reply(brief_api):
+    r = send(brief_api, input="word " * 30, position="brief")
+    assert r.status_code == 201
+    prefix = "Saved for tomorrow's brief: "
+    message = r.json()["message"]
+    assert message.startswith(prefix)
+    what = message[len(prefix):]
+    assert what.endswith("…") and len(what) <= 80
+
+
+def test_brief_note_long_shared_text_is_trimmed_before_storing(brief_api):
+    r = send(brief_api, input="word " * 120, position="brief")  # well past NOTE_TEXT_MAX once collapsed
+    assert r.status_code == 201
+    (row,) = notes_mod.pending_notes(conn_of(brief_api))
+    assert len(row["text"]) <= notes_mod.NOTE_TEXT_MAX and row["text"].endswith("…")

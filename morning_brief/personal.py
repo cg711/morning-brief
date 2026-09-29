@@ -19,6 +19,7 @@ from typing import Callable, Iterable
 
 import httpx
 
+from . import notes
 from .config import TZ, Settings
 
 log = logging.getLogger(__name__)
@@ -267,7 +268,8 @@ def actual_spending(settings: Settings, yesterday: date, *, fetch: Callable | No
         return None
 
 
-def gather_personal(settings: Settings, http, now: datetime, *, actual_fetch: Callable | None = None) -> dict | None:
+def gather_personal(settings: Settings, http, now: datetime, *, actual_fetch: Callable | None = None,
+                    conn=None) -> dict | None:
     if not settings.personal_segment:
         return None
     today = now.astimezone(TZ).date()
@@ -285,6 +287,16 @@ def gather_personal(settings: Settings, http, now: datetime, *, actual_fetch: Ca
     spending = actual_spending(settings, today - timedelta(days=1), fetch=actual_fetch)
     if spending is not None:
         facts["spending"] = spending
+    if conn is not None:
+        try:
+            due = notes.due_notes(conn, today)
+            if due:
+                facts["notes"] = due
+            countdowns = notes.due_countdowns(conn, today)
+            if countdowns:
+                facts["countdowns"] = countdowns
+        except Exception as exc:
+            log.warning("notes and countdowns unavailable: %s", type(exc).__name__)
     return facts or None
 
 

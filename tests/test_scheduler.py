@@ -198,3 +198,14 @@ def test_start_background_run_in_worker_mode_gathers_while_a_render_holds_the_ru
     monkeypatch.setattr(daily_worker, "gather_run", lambda s, trigger: done.set())
     assert scheduler.start_background_run(replace(settings, daily_mode="worker"), "schedule") is True
     assert done.wait(2)
+
+
+def test_prune_job_runs_notes_housekeeping(conn, settings):
+    from datetime import date, timedelta
+
+    from morning_brief import notes
+
+    conn.execute("INSERT INTO countdowns (label, date, created_at) VALUES ('Gone', ?, ?)",
+                 ((date(2026, 9, 25) - timedelta(days=1)).isoformat(), NOW.isoformat()))
+    scheduler.prune_job(conn, settings, lambda: NOW)
+    assert conn.execute("SELECT COUNT(*) FROM countdowns").fetchone()[0] == 0

@@ -14,7 +14,7 @@ from typing import Callable
 
 import httpx
 
-from . import articles, db, feeds, personal, pipeline, retention, speech, window, writer
+from . import articles, db, feeds, notes, personal, pipeline, retention, speech, window, writer
 from .config import TZ, Settings
 from .deepdives import _has_control_chars
 from .models import SEGMENTS
@@ -32,6 +32,10 @@ MAX_PER_SEGMENT = 15
 PERSONAL = "personal"
 PERSONAL_HEADLINE = "Your morning"
 PERSONAL_MIN_WORDS, PERSONAL_MAX_WORDS = 20, 160
+NOTES = "notes"
+NOTES_HEADLINE = "Your notes"
+NOTES_MIN_WORDS, NOTES_MAX_WORDS = 20, 400
+EXTRA_SEGMENTS = (PERSONAL, NOTES)
 _lock = threading.RLock()  # job transitions on the shared connection
 _gather_lock = threading.Lock()  # one gather at a time; independent of the Kokoro run_lock
 
@@ -93,9 +97,9 @@ def gather(settings: Settings, conn, http, now: datetime, trigger: str) -> str:
                        "text": _kind(it)} for it in chosen]
         bodies = {it.id: it.body for it in chosen if _kind(it) == "feed"}
         headlines = [s["headline"] for s in json.loads(previous["script_json"])["segments"]
-                     if s.get("segment") != PERSONAL] if previous else []
+                     if s.get("segment") not in EXTRA_SEGMENTS] if previous else []
         try:
-            facts = personal.gather_personal(settings, http, now)
+            facts = personal.gather_personal(settings, http, now, conn=conn)
         except Exception:
             log.exception("personal facts failed")
             facts = None
@@ -149,6 +153,20 @@ def gather_run(settings: Settings, trigger: str, *, http_factory: Callable | Non
     return None
 
 
+def _claim_personal(job) -> dict | None:
+    """The job's personal facts for the worker: note ids stay on the server."""
+    facts = json.loads(job["personal_json"]) if job["personal_json"] else None
+    if facts and facts.get("notes"):
+        facts = {**facts, "notes": [{"text": n.get("text", ""), "url": n.get("url")} for n in facts["notes"]]}
+    return facts
+
+
+def _note_ids(job) -> list[int]:
+    facts = json.loads(job["personal_json"]) if job["personal_json"] else {}
+    return [n["id"] for n in (facts or {}).get("notes", [])
+            if isinstance(n, dict) and isinstance(n.get("id"), int)]
+
+
 def claim(conn, now: datetime, location: str) -> dict | None:
     """Hand today's job to the worker if it is waiting, or claimed more than CLAIM_TTL ago."""
     episode_date = _local_date(now)
@@ -176,7 +194,7 @@ def claim(conn, now: datetime, location: str) -> dict | None:
         "previous_headlines": json.loads(job["previous_json"]),
         "target_words": TARGET_WORDS,
         "candidates": [{k: c[k] for k in CLAIM_KEYS} for c in json.loads(job["candidates_json"])],
-        "personal": json.loads(job["personal_json"]) if job["personal_json"] else None,
+        "personal": _claim_personal(job),
     }
 
 
@@ -228,45 +246,56 @@ def _validate_news(script, known: set[str]) -> list[str]:
     return writer.validate_script(script, known)
 
 
-def _personal_problems(seg: dict) -> list[str]:
+def _extra_problems(seg: dict, name: str, low: int, high: int) -> list[str]:
     problems = []
     text = seg.get("text")
     if not isinstance(text, str) or not text.strip():
-        problems.append("the personal segment needs non-empty 'text'")
+        problems.append(f"the {name} segment needs non-empty 'text'")
     elif _has_control_chars(text):
-        problems.append("the personal segment text contains control characters")
-    elif not PERSONAL_MIN_WORDS <= len(text.split()) <= PERSONAL_MAX_WORDS:
-        problems.append(f"the personal segment is {len(text.split())} words; it must be "
-                        f"{PERSONAL_MIN_WORDS} to {PERSONAL_MAX_WORDS}")
+        problems.append(f"the {name} segment text contains control characters")
+    elif not low <= len(text.split()) <= high:
+        problems.append(f"the {name} segment is {len(text.split())} words; it must be {low} to {high}")
     if seg.get("item_ids") not in (None, []):
-        problems.append("the personal segment must not cite item ids")
+        problems.append(f"the {name} segment must not cite item ids")
     return problems
 
 
-def validate_submission(script, known: set[str], *, personal_allowed: bool = False) -> list[str]:
-    """An optional personal segment first (only when the claim had personal data), then the news segments, which
-    follow the same rules as the API writer. Personal words don't count toward the news word range."""
+def validate_submission(script, known: set[str], *, personal_allowed: bool = False,
+                        notes_allowed: bool = False) -> list[str]:
+    """Optional 'personal' then 'notes' segments first (each only when the claim had that data), then the news
+    segments, which follow the API writer's rules. Personal and notes words don't count toward
+    the news range."""
     if not isinstance(script, dict):
         return ["the body must be a JSON object"]
     segments = script.get("segments")
+    if not isinstance(segments, list):
+        return _validate_news(script, known)
+    kinds = [s.get("segment") if isinstance(s, dict) else None for s in segments]
+    extra = [n for n, kind in enumerate(kinds) if kind in EXTRA_SEGMENTS]
+    if not extra:
+        return _validate_news(script, known)
     problems: list[str] = []
-    if isinstance(segments, list):
-        positions = [n for n, s in enumerate(segments) if isinstance(s, dict) and s.get("segment") == PERSONAL]
-        if positions:
-            if not personal_allowed:
-                problems.append("there is no personal data today; remove the 'personal' segment")
-            elif positions != [0]:
-                problems.append("the 'personal' segment must be the first segment, and appear only once")
+    order = [kinds[n] for n in extra]
+    if extra != list(range(len(extra))) or order not in ([PERSONAL], [NOTES], [PERSONAL, NOTES]):
+        problems.append("the 'personal' segment must be the first segment and the 'notes' segment must come right "
+                        "after it (or first without one); each may appear only once")
+    else:
+        for n in extra:
+            if kinds[n] == PERSONAL:
+                problems += (_extra_problems(segments[n], "personal", PERSONAL_MIN_WORDS, PERSONAL_MAX_WORDS)
+                             if personal_allowed else ["there is no personal data today; remove the 'personal' segment"])
             else:
-                problems += _personal_problems(segments[0])
-            script = {**script, "segments": [s for n, s in enumerate(segments) if n not in positions]}
-            return problems + [p.replace("segment ", "news segment ", 1) for p in _validate_news(script, known)]
-    return problems + _validate_news(script, known)
+                problems += (_extra_problems(segments[n], "notes", NOTES_MIN_WORDS, NOTES_MAX_WORDS)
+                             if notes_allowed else ["there are no notes today; remove the 'notes' segment"])
+    news = {**script, "segments": [s for n, s in enumerate(segments) if n not in extra]}
+    return problems + [p.replace("segment ", "news segment ", 1) for p in _validate_news(news, known)]
 
 
 def _clean_segment(seg: dict) -> dict:
     if seg.get("segment") == PERSONAL:
         return {"segment": PERSONAL, "headline": PERSONAL_HEADLINE, "text": seg.get("text"), "item_ids": []}
+    if seg.get("segment") == NOTES:
+        return {"segment": NOTES, "headline": NOTES_HEADLINE, "text": seg.get("text"), "item_ids": []}
     return {"segment": seg.get("segment"), "headline": seg.get("headline"),
             "text": seg.get("text"), "item_ids": seg.get("item_ids")}
 
@@ -318,6 +347,8 @@ def _publish_locked(settings: Settings, conn, episode_date: str, synthesize: Cal
     pipeline.speak_and_store(settings, conn, job["run_id"], episode_date, job["cutoff_at"], script, sources,
                              synthesize, now)
     try:
+        if any(seg.get("segment") == NOTES for seg in script["segments"]):
+            notes.mark_delivered(conn, _note_ids(job), episode_date)
         with _lock:
             conn.execute("UPDATE daily_jobs SET status = 'done', updated_at = ? WHERE date = ? AND status = 'speaking'",
                          (now().isoformat(), episode_date))

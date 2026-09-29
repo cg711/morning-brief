@@ -1,0 +1,41 @@
+{% if nc.enabled %}
+<section id="notes-card" class="card notes">
+  <h2>Notes &amp; countdowns</h2>
+  {% if nc.error %}<p class="warn small">{{ nc.error }}</p>{% endif %}
+  {% if nc.notes %}
+    <ul class="note-list">
+      {% for n in nc.notes %}
+        <li>
+          <span class="badge">{{ n.when }}</span>
+          <span>{{ n.text or n.host }}{% if n.url and n.text %} <span class="muted small">· {{ n.host }}</span>{% endif %}</span>
+          <button class="small-button danger" hx-delete="/notes/{{ n.id }}" hx-target="#notes-card" hx-swap="outerHTML">Delete</button>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted small">No notes waiting. Notes are read back in "Your notes" in the brief you pick.</p>
+  {% endif %}
+  <form class="inline-form" hx-post="/notes" hx-target="#notes-card" hx-swap="outerHTML">
+    <input name="text" maxlength="500" placeholder="Note for a coming brief" aria-label="Note">
+    <input name="url" type="url" maxlength="2000" placeholder="Link (optional)" aria-label="Link">
+    <input name="date" type="date" min="{{ nc.today }}" value="{{ nc.next_brief }}" aria-label="Which brief">
+    <button type="submit">Add note</button>
+  </form>
+  <h3 class="sub">Countdowns</h3>
+  {% if nc.countdowns %}
+    <ul class="note-list">
+      {% for c in nc.countdowns %}
+        <li>
+          <span><strong>{{ c.label }}</strong> · {{ c.date }} · {{ c.in }}</span>
+          <button class="small-button danger" hx-delete="/countdowns/{{ c.id }}" hx-target="#notes-card" hx-swap="outerHTML">Delete</button>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  <form class="inline-form" hx-post="/countdowns" hx-target="#notes-card" hx-swap="outerHTML">
+    <input name="label" maxlength="60" placeholder="e.g. Vacation" aria-label="Countdown label">
+    <input name="date" type="date" min="{{ nc.today }}" aria-label="Countdown date">
+    <button type="submit">Add countdown</button>
+  </form>
+</section>
+{% endif %}
