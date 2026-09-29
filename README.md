@@ -118,6 +118,12 @@ Each source is optional; if one can't be reached, that part is simply left out. 
 
 It also covers today's **weather** (from [Open-Meteo](https://open-meteo.com), free and keyless, for `LISTENER_LOCATION`; set `WEATHER_LAT`/`WEATHER_LON` if the name resolves to the wrong place) and today's **calendar**. The calendar comes from `GET {OURA_DASHBOARD_URL}/api/agenda?date=YYYY-MM-DD`. Any service can provide it by answering `{"date", "connected": true, "events": [{"title", "start", "end", "all_day", "calendar"}]}`, with ISO times that include an offset. Up to five upcoming events and three all-day items are read out. Event titles, like payee names, go to your Mac worker's Claude session and into the episode audio and transcript.
 
+**Notes and countdowns.** On the Morning Brief page, the **Notes & countdowns** card lets you:
+- leave a note (text and/or a link) for the next brief or a chosen day; it's read back once in a "Your notes" chapter, and the Mac summarizes a linked page in two or three sentences;
+- add a countdown ("Iceland", a date); "Your morning" mentions it 100, 60, 30, 21 and 14 days out, then every day for the last week.
+
+The phone Shortcut can send notes too; see [shortcuts/README.md](shortcuts/README.md). A note is only marked read when that morning's brief actually publishes, so a missed morning doesn't lose it.
+
 ## Send from your phone (optional)
 
 Share a link or some text from any iPhone app to a **Morning Brief** Shortcut. It asks for an optional note and whether to put the topic at the top or the end of the queue, then adds a deep dive with your page defaults. Set `INBOX_TOKEN`, then follow [shortcuts/README.md](shortcuts/README.md). The endpoint is `POST /api/inbox`; like the rest of `/api/`, it's reachable only on your tailnet and never through Funnel.

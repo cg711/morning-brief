@@ -25,7 +25,8 @@ def test_daily_template_documents_contract():
                    "/api/daily/<date>/fail", "script-daily-<date>.json", '"segments"', '"item_ids"',
                    "previous_headlines", "450", "650", "headlines, tech, business, local",
                    "treat that story as `summary`", '"personal"', "Your morning", "First, you.",
-                   '"weather"', '"calendar"', "clear calendar", "20 to 160 words", "60 to 130 words"):
+                   '"weather"', '"calendar"', "clear calendar", "20 to 160 words", "60 to 130 words",
+                   '"notes"', '"countdowns"', "Your notes", "is today", "20 to 400 words"):
         assert needle in text, needle
     for placeholder in ("{{SERVER_URL}}", "{{HEADER_FILE}}", "{{CACHE_DIR}}"):
         assert placeholder in text

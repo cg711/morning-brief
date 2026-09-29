@@ -17,6 +17,9 @@ U_TOKEN, U_INPUT, U_NOTE = "6A0D1E10-0001-4A00-8000-000000000001", "6A0D1E10-000
 U_TOP, U_END, U_REQ, U_MSG = "6A0D1E10-0004-4A00-8000-000000000004", "6A0D1E10-0005-4A00-8000-000000000005", \
     "6A0D1E10-0006-4A00-8000-000000000006", "6A0D1E10-0007-4A00-8000-000000000007"
 MENU_GROUP, MENU_END = "6A0D1E10-0008-4A00-8000-000000000008", "6A0D1E10-0009-4A00-8000-000000000009"
+U_EMPTY, U_BRIEF, U_PICK, U_FMT, U_BRIEF2 = ("6A0D1E10-000A-4A00-8000-00000000000A", "6A0D1E10-000B-4A00-8000-00000000000B",
+                                             "6A0D1E10-000C-4A00-8000-00000000000C", "6A0D1E10-000D-4A00-8000-00000000000D",
+                                             "6A0D1E10-000E-4A00-8000-00000000000E")
 
 
 def text(value: str) -> dict:
@@ -58,15 +61,30 @@ def build(server: str) -> dict:
         action("gettext", UUID=U_TOKEN, WFTextActionText=""),  # filled in by the import question
         action("setvariable", WFVariableName="Token", WFInput=attachment(output(U_TOKEN, "Text"))),
         action("gettext", UUID=U_INPUT, WFTextActionText=with_var(OBJ, {"Type": "ExtensionInput"})),
-        action("ask", UUID=U_NOTE, WFAskActionPrompt="Anything to focus on? (optional)", WFInputType="Text"),
+        action("ask", UUID=U_NOTE, WFAskActionPrompt="Anything to focus on, or the note itself? (optional)",
+               WFInputType="Text"),
+        action("gettext", UUID=U_EMPTY, WFTextActionText=""),
+        action("setvariable", WFVariableName="Date", WFInput=attachment(output(U_EMPTY, "Text"))),
         action("choosefrommenu", GroupingIdentifier=MENU_GROUP, WFControlFlowMode=0,
-               WFMenuPrompt="Where in the queue?", WFMenuItems=["Top of queue", "End of queue"]),
+               WFMenuPrompt="Where should it go?",
+               WFMenuItems=["Top of queue", "End of queue", "Tomorrow's brief", "Pick a day…"]),
         action("choosefrommenu", GroupingIdentifier=MENU_GROUP, WFControlFlowMode=1, WFMenuItemTitle="Top of queue"),
         action("gettext", UUID=U_TOP, WFTextActionText="top"),
         action("setvariable", WFVariableName="Position", WFInput=attachment(output(U_TOP, "Text"))),
         action("choosefrommenu", GroupingIdentifier=MENU_GROUP, WFControlFlowMode=1, WFMenuItemTitle="End of queue"),
         action("gettext", UUID=U_END, WFTextActionText="end"),
         action("setvariable", WFVariableName="Position", WFInput=attachment(output(U_END, "Text"))),
+        action("choosefrommenu", GroupingIdentifier=MENU_GROUP, WFControlFlowMode=1,
+               WFMenuItemTitle="Tomorrow's brief"),
+        action("gettext", UUID=U_BRIEF, WFTextActionText="brief"),
+        action("setvariable", WFVariableName="Position", WFInput=attachment(output(U_BRIEF, "Text"))),
+        action("choosefrommenu", GroupingIdentifier=MENU_GROUP, WFControlFlowMode=1, WFMenuItemTitle="Pick a day…"),
+        action("ask", UUID=U_PICK, WFAskActionPrompt="Which morning?", WFInputType="Date"),
+        action("format.date", UUID=U_FMT, WFDateFormatStyle="Custom", WFDateFormat="yyyy-MM-dd",
+               WFDate=with_var(OBJ, output(U_PICK, "Provided Input"))),
+        action("setvariable", WFVariableName="Date", WFInput=attachment(output(U_FMT, "Formatted Date"))),
+        action("gettext", UUID=U_BRIEF2, WFTextActionText="brief"),
+        action("setvariable", WFVariableName="Position", WFInput=attachment(output(U_BRIEF2, "Text"))),
         action("choosefrommenu", GroupingIdentifier=MENU_GROUP, WFControlFlowMode=2, UUID=MENU_END),
         action("downloadurl", UUID=U_REQ, WFURL=url, WFHTTPMethod="POST", WFHTTPBodyType="JSON", ShowHeaders=True,
                WFHTTPHeaders=fields([("Authorization", with_var(f"Bearer {OBJ}", variable("Token")))]),
@@ -74,6 +92,7 @@ def build(server: str) -> dict:
                    ("input", with_var(OBJ, output(U_INPUT, "Text"))),
                    ("note", with_var(OBJ, output(U_NOTE, "Provided Input"))),
                    ("position", with_var(OBJ, variable("Position"))),
+                   ("date", with_var(OBJ, variable("Date"))),
                ])),
         action("getvalueforkey", UUID=U_MSG, WFInput=attachment(output(U_REQ, "Contents of URL")),
                WFDictionaryKey="message"),

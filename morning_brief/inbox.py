@@ -41,6 +41,13 @@ def parse_input(text: str) -> tuple[str, str | None]:
     return _cut(line), url
 
 
+def parse_note(text: str) -> tuple[str, str | None]:
+    """For a brief note: when one line is a lone link, (the other lines joined, link); otherwise (all text, None)."""
+    _, url = parse_input(text)
+    kept = [line.strip() for line in text.strip().splitlines() if line.strip() and line.strip() != url]
+    return " ".join(" ".join(kept).split()), url
+
+
 def ordinal(n: int) -> str:
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"

@@ -6,7 +6,7 @@ from datetime import datetime, time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import daily_worker, db, deepdives, notify as notify_mod, pipeline, retention
+from . import daily_worker, db, deepdives, notes, notify as notify_mod, pipeline, retention
 from .config import Settings, TZ
 
 log = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ def prune_job(conn, settings: Settings, clock) -> None:
     retention.prune(conn, settings.audio_dir, now.astimezone(TZ).date())
     result = deepdives.housekeeping(conn, settings.deep_dives_dir, now)
     log.info("deep-dive housekeeping: %s", result)
+    log.info("notes housekeeping: %s", notes.housekeeping(conn, now.astimezone(TZ).date()))
 
 
 def long_running_job(conn, settings: Settings, clock, notify) -> int:

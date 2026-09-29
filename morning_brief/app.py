@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, inbox_routes, notify, pipeline, podcast, retention, scheduler, share_routes
+from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, inbox_routes, notes_routes, notify, pipeline, podcast, retention, scheduler, share_routes
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
@@ -181,6 +181,10 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
 
     app.include_router(inbox_routes.make_router(settings=settings, conn=conn, clock=clock))
 
+    notes_router = notes_routes.make_router(settings=settings, conn=conn, templates=templates, clock=clock,
+                                            check_hx_request=check_hx_request)
+    app.include_router(notes_router)
+
     app.include_router(daily_routes.make_router(
         settings=settings, conn=conn, clock=clock, check_worker=dd_router.check_worker,
         start_publish=start_daily_publish))
@@ -282,6 +286,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
             "feed_url": f"{settings.public_base_url}/feed/{settings.feed_token}.xml",
             "deep_feed_url": f"{settings.public_base_url}/feed/deep-dives/{settings.feed_token}.xml",
             "dd": dd_router.section_view(),
+            "nc": notes_router.view(),
             "month_cost": month_cost(),
             "last_run": f"{last['status']} {_local(last['started_at'])}" if last else None,
             "claude_offline": settings.claude_offline,

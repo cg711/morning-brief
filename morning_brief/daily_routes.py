@@ -39,8 +39,10 @@ def make_router(*, settings, conn, clock, check_worker, start_publish) -> APIRou
             script = json.loads(await request.body())
         except ValueError:
             return JSONResponse({"problems": ["the body must be valid JSON"]}, status_code=422)
+        facts = json.loads(job["personal_json"]) if job["personal_json"] else None
         problems = daily_worker.validate_submission(script, daily_worker.known_ids(job),
-                                                    personal_allowed=job["personal_json"] is not None)
+                                                    personal_allowed=bool(facts and set(facts) - {"notes"}),
+                                                    notes_allowed=bool(facts and facts.get("notes")))
         if problems:
             return JSONResponse({"problems": problems}, status_code=422)
         if not daily_worker.accept(conn, episode_date, script, clock()):

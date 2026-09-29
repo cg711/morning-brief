@@ -44,3 +44,14 @@ def test_exactly_200_is_kept():
                                     (111, "111th")])
 def test_ordinal(n, word):
     assert inbox.ordinal(n) == word
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Call the dentist\nand ask about Tuesday", ("Call the dentist and ask about Tuesday", None)),
+    ("https://example.com/a", ("", "https://example.com/a")),
+    ("Great read\nhttps://example.com/a", ("Great read", "https://example.com/a")),
+    ("one https://example.com/a two", ("one https://example.com/a two", None)),
+    ("   ", ("", None)),
+])
+def test_parse_note(text, expected):
+    assert inbox.parse_note(text) == expected

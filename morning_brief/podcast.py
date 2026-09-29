@@ -19,7 +19,7 @@ def describe(script: dict, sources: list[dict]) -> str:
     by_id = {s["item_id"]: s for s in sources}
     parts = [script["intro"]]
     for seg in script["segments"]:
-        if seg.get("segment") == "personal":  # sleep and spending stay out of the feed
+        if seg.get("segment") in ("personal", "notes"):  # sleep, spending and notes stay out of the feed
             continue
         parts.append(f"{seg['headline']}\n{seg['text']}")
         cited = [by_id[i] for i in seg["item_ids"] if i in by_id]
