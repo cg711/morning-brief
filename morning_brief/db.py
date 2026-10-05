@@ -69,6 +69,12 @@ def finish_run(conn, run_id: int, status: str, finished_at: str, error: str | No
     )
 
 
+def reopen_run(conn, run_id: int) -> None:
+    """A run marked failed because its brief was late is running again (a late worker picked the job back up)."""
+    conn.execute("UPDATE runs SET status = 'running', finished_at = NULL, error = NULL "
+                 "WHERE id = ? AND status = 'failed'", (run_id,))
+
+
 def fail_interrupted_runs(conn, finished_at: str) -> int:
     """Fail runs left 'running' by a restart — except worker-mode daily runs still waiting on the Mac."""
     cur = conn.execute(

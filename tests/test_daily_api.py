@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -134,3 +135,52 @@ def test_restart_leaves_waiting_run_running_but_fails_speaking_job(settings):
         speaking_job = daily_worker.get_job(c, speaking_date)
         assert speaking_job["status"] == "failed" and "interrupted during speech" in speaking_job["error"]
         assert db.latest_run_for(c, speaking_date)["status"] == "failed"
+
+
+def late_api(settings, published, now):
+    s = replace(settings, worker_token=WTOKEN, daily_mode="worker")
+    app = create_app(s, clock=lambda: now[0], start_run=lambda t: True, start_scheduler=False,
+                     start_daily_publish=published.append)
+    return s, TestClient(app)
+
+
+def test_a_late_worker_can_finish_a_brief_that_was_marked_missed(settings, published):
+    now = [NOW]
+    s, client = late_api(settings, published, now)
+    with client as api:
+        conn = api.app.state.conn
+        date = gathered(conn, s)
+        assert api.post("/api/daily/claim", headers=AUTH).status_code == 200  # the Mac starts, then sleeps
+        now[0] = NOW + timedelta(minutes=38)
+        daily_worker.check_missed(s, conn, now[0], lambda *a: None)  # READY_BY passes
+        now[0] = NOW + timedelta(minutes=70)  # the lid opens
+        assert api.get(f"/api/daily/{date}/items/{item_id(COUNCIL)}", headers=AUTH).status_code == 200
+        ok = api.post(f"/api/daily/{date}/script", json=script_for([item_id(COUNCIL)]), headers=AUTH)
+        assert ok.status_code == 202 and published == [date]
+        assert daily_worker.get_job(conn, date)["status"] == "speaking"
+
+
+def test_a_missed_brief_can_be_claimed_again_by_a_later_run(settings, published):
+    now = [NOW]
+    s, client = late_api(settings, published, now)
+    with client as api:
+        conn = api.app.state.conn
+        gathered(conn, s)
+        daily_worker.check_missed(s, conn, now[0], lambda *a: None)
+        assert api.post("/api/daily/claim", headers=AUTH).status_code == 200
+
+
+def test_after_the_grace_period_a_missed_brief_stays_missed(settings, published):
+    now = [NOW]
+    s, client = late_api(settings, published, now)
+    with client as api:
+        conn = api.app.state.conn
+        date = gathered(conn, s)
+        api.post("/api/daily/claim", headers=AUTH)
+        daily_worker.check_missed(s, conn, now[0], lambda *a: None)
+        now[0] = NOW + daily_worker.LATE_GRACE + timedelta(minutes=1)
+        assert api.get(f"/api/daily/{date}/items/{item_id(COUNCIL)}", headers=AUTH).status_code == 404
+        assert api.post(f"/api/daily/{date}/script", json=script_for([item_id(COUNCIL)]),
+                        headers=AUTH).status_code == 404
+        assert api.post("/api/daily/claim", headers=AUTH).status_code == 204
+        assert published == []
