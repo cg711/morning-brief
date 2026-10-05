@@ -273,6 +273,61 @@ def test_check_missed_without_any_job(conn, settings):
     assert calls == [("No brief today", "No stories were gathered.")]
 
 
+def test_missed_job_can_still_be_claimed_within_the_grace_period(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.check_missed(settings, conn, NOW, lambda *a: None)
+    assert daily_worker.get_job(conn, date)["status"] == "missed" and db.latest_run(conn)["status"] == "failed"
+    assert daily_worker.claim(conn, NOW + daily_worker.LATE_GRACE + timedelta(minutes=1), "Minneapolis") is None
+    claim = daily_worker.claim(conn, NOW + timedelta(minutes=20), "Minneapolis")
+    assert claim is not None and claim["date"] == date
+    assert daily_worker.get_job(conn, date)["status"] == "claimed"
+    run = db.latest_run(conn)
+    assert (run["status"], run["stage"], run["error"]) == ("running", "writing", None)
+
+
+def test_item_text_is_served_to_a_late_worker_but_not_after_the_grace_period(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    daily_worker.check_missed(settings, conn, NOW, lambda *a: None)
+    item = item_id(COUNCIL)
+    assert daily_worker.item_text(conn, date, item, NOW + timedelta(minutes=40)) is not None
+    assert daily_worker.item_text(conn, date, item, NOW + daily_worker.LATE_GRACE + timedelta(minutes=1)) is None
+
+
+def test_a_frozen_worker_can_still_submit_after_the_deadline_and_the_brief_publishes(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")  # the Mac starts, then sleeps
+    daily_worker.check_missed(settings, conn, NOW + timedelta(minutes=38), lambda *a: None)
+    assert daily_worker.get_job(conn, date)["status"] == "missed"
+    late = NOW + timedelta(hours=1, minutes=9)
+    assert daily_worker.accept(conn, date, script_for([item_id(COUNCIL)]), late) is True
+    assert daily_worker.get_job(conn, date)["status"] == "speaking"
+    assert daily_worker.speak_and_publish(settings, date, synthesize=speech.fake_synthesize,
+                                          now=lambda: late) == "ready"
+    assert db.get_episode(conn, date) is not None
+    assert db.latest_run(conn)["status"] == "succeeded"
+
+
+def test_a_late_submit_after_the_grace_period_is_refused(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    daily_worker.check_missed(settings, conn, NOW, lambda *a: None)
+    too_late = NOW + daily_worker.LATE_GRACE + timedelta(minutes=1)
+    assert daily_worker.accept(conn, date, script_for([item_id(COUNCIL)]), too_late) is False
+    assert daily_worker.get_job(conn, date)["status"] == "missed"
+
+
+def test_a_job_the_worker_gave_up_on_is_not_revived(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    daily_worker.fail_job(conn, date, "every candidate was paywalled", NOW)
+    daily_worker.check_missed(settings, conn, NOW, lambda *a: None)
+    later = NOW + timedelta(minutes=20)
+    assert daily_worker.claim(conn, later, "Minneapolis") is None
+    assert daily_worker.item_text(conn, date, item_id(COUNCIL), later) is None
+    assert daily_worker.accept(conn, date, script_for([item_id(COUNCIL)]), later) is False
+
+
 def test_fail_interrupted_speaking_jobs(conn, settings):
     date = gathered(conn, settings)
     daily_worker.claim(conn, NOW, "Minneapolis")

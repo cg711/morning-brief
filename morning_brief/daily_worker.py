@@ -22,6 +22,8 @@ from .models import SEGMENTS
 log = logging.getLogger(__name__)
 MODEL = "mac-worker"
 CLAIM_TTL = timedelta(minutes=15)
+# A brief marked missed at READY_BY can still be finished by a late worker (a sleeping Mac) for this long.
+LATE_GRACE = timedelta(hours=3)
 TARGET_WORDS = 550
 SUMMARY_WORDS = 60
 LOCK_WAIT_S, LOCK_RETRY_S = 30 * 60, 60
@@ -167,6 +169,18 @@ def _note_ids(job) -> list[int]:
             if isinstance(n, dict) and isinstance(n.get("id"), int)]
 
 
+def _reopenable(job, now: datetime) -> bool:
+    """A job marked missed only because time ran out (the worker never reported a failure), still inside the
+    grace period: a late worker may still claim it, read its items and submit a script."""
+    if job is None or job["status"] != "missed" or job["error"] is not None:
+        return False
+    return now - datetime.fromisoformat(job["updated_at"]) < LATE_GRACE
+
+
+def can_submit(job, now: datetime) -> bool:
+    return job is not None and (job["status"] == "claimed" or _reopenable(job, now))
+
+
 def claim(conn, now: datetime, location: str) -> dict | None:
     """Hand today's job to the worker if it is waiting, or claimed more than CLAIM_TTL ago."""
     episode_date = _local_date(now)
@@ -176,14 +190,17 @@ def claim(conn, now: datetime, location: str) -> dict | None:
             return None
         stale = (job["status"] == "claimed" and job["claimed_at"] is not None
                  and datetime.fromisoformat(job["claimed_at"]) < now - CLAIM_TTL)
-        if job["status"] != "waiting" and not stale:
+        revive = _reopenable(job, now)
+        if job["status"] != "waiting" and not stale and not revive:
             return None
         cur = conn.execute(
             "UPDATE daily_jobs SET status = 'claimed', claimed_at = ?, updated_at = ? "
-            "WHERE date = ? AND status IN ('waiting', 'claimed')",
+            "WHERE date = ? AND status IN ('waiting', 'claimed', 'missed')",
             (now.isoformat(), now.isoformat(), episode_date))
         if cur.rowcount == 0:
             return None
+        if revive:
+            db.reopen_run(conn, job["run_id"])
         db.set_stage(conn, job["run_id"], "writing")
     local = now.astimezone(TZ)
     return {
@@ -198,9 +215,9 @@ def claim(conn, now: datetime, location: str) -> dict | None:
     }
 
 
-def item_text(conn, episode_date: str, item: str) -> str | None:
+def item_text(conn, episode_date: str, item: str, now: datetime | None = None) -> str | None:
     job = get_job(conn, episode_date)
-    if job is None or job["status"] not in ("waiting", "claimed"):
+    if job is None or (job["status"] not in ("waiting", "claimed") and not (now and _reopenable(job, now))):
         return None
     return json.loads(job["bodies_json"]).get(item)
 
@@ -310,15 +327,21 @@ def _clean_script(script: dict) -> dict:
 
 
 def accept(conn, episode_date: str, script: dict, now: datetime) -> bool:
-    """claimed → speaking, storing the script. False if the job isn't claimed (any more)."""
+    """claimed → speaking, storing the script. False if the job isn't claimed (any more). A job marked missed
+    only because the worker was late may still be accepted during the grace period."""
     with _lock:
+        job = get_job(conn, episode_date)
+        if not can_submit(job, now):
+            return False
         cur = conn.execute(
             "UPDATE daily_jobs SET status = 'speaking', script_json = ?, updated_at = ? "
-            "WHERE date = ? AND status = 'claimed'",
+            "WHERE date = ? AND status IN ('claimed', 'missed')",
             (json.dumps(_clean_script(script)), now.isoformat(), episode_date))
         if cur.rowcount == 0:
             return False
-        db.set_stage(conn, get_job(conn, episode_date)["run_id"], "speaking")
+        if job["status"] == "missed":
+            db.reopen_run(conn, job["run_id"])
+        db.set_stage(conn, job["run_id"], "speaking")
         return True
 
 

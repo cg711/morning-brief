@@ -24,7 +24,7 @@ def make_router(*, settings, conn, clock, check_worker, start_publish) -> APIRou
     @router.get("/api/daily/{episode_date}/items/{item}")
     def item(episode_date: str, item: str, request: Request):
         check_worker(request)
-        text = daily_worker.item_text(conn, episode_date, item)
+        text = daily_worker.item_text(conn, episode_date, item, clock())
         if text is None:
             raise HTTPException(404)
         return PlainTextResponse(text)
@@ -33,7 +33,7 @@ def make_router(*, settings, conn, clock, check_worker, start_publish) -> APIRou
     async def submit(episode_date: str, request: Request):
         check_worker(request)
         job = daily_worker.get_job(conn, episode_date)
-        if job is None or job["status"] != "claimed":
+        if not daily_worker.can_submit(job, clock()):
             raise HTTPException(404)
         try:
             script = json.loads(await request.body())
