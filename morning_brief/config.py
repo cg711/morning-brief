@@ -43,6 +43,13 @@ def _parse_time(value: str) -> time:
     return time(int(hours), int(minutes))
 
 
+def _int_in_range(env, name: str, default: int, low: int, high: int) -> int:
+    raw = (env.get(name, "") or "").strip() or str(default)
+    if not (raw.isascii() and raw.isdigit() and low <= int(raw) <= high):
+        raise ConfigError(f"{name} must be a whole number from {low} to {high}")
+    return int(raw)
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -78,6 +85,12 @@ class Settings:
     inbox_token: str = field(default="", repr=False)
     weather_lat: float | None = None
     weather_lon: float | None = None
+    house_brief: bool = False
+    house_at: time = time(7, 0)
+    house_voice: str = ""
+    house_memo_max_s: int = 60
+    house_upload_max_mb: int = 10
+    house_pending_memos: int = 10
 
     @property
     def db_path(self) -> Path:
@@ -98,6 +111,14 @@ class Settings:
     @property
     def music_dir(self) -> Path:
         return self.data_dir / "music"
+
+    @property
+    def house_dir(self) -> Path:
+        return self.data_dir / "house"
+
+    @property
+    def house_voice_name(self) -> str:
+        return self.house_voice or self.cohost_voice
 
     @property
     def worker_mode(self) -> bool:
@@ -165,6 +186,10 @@ class Settings:
                 raise ConfigError("WEATHER_LAT and WEATHER_LON must be numbers, e.g. 44.98 and -93.27") from None
             if not (-90 <= weather_lat <= 90 and -180 <= weather_lon <= 180):
                 raise ConfigError("WEATHER_LAT must be within ±90 and WEATHER_LON within ±180")
+        try:
+            house_at = _parse_time((env.get("HOUSE_AT", "") or "").strip() or "07:00")
+        except ValueError:
+            raise ConfigError("HOUSE_AT must be a time like 07:00") from None
         return cls(
             data_dir=Path(env.get("DATA_DIR", "data")),
             feed_token=token,
@@ -199,4 +224,10 @@ class Settings:
             inbox_token=inbox_token,
             weather_lat=weather_lat,
             weather_lon=weather_lon,
+            house_brief=env.get("HOUSE_BRIEF", "0") == "1",
+            house_at=house_at,
+            house_voice=env.get("HOUSE_VOICE", "").strip(),
+            house_memo_max_s=_int_in_range(env, "HOUSE_MEMO_MAX_S", 60, 5, 600),
+            house_upload_max_mb=_int_in_range(env, "HOUSE_UPLOAD_MAX_MB", 10, 1, 50),
+            house_pending_memos=_int_in_range(env, "HOUSE_PENDING_MEMOS", 10, 1, 100),
         )

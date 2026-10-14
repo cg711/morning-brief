@@ -173,3 +173,37 @@ def test_weather_override():
 def test_weather_override_rejected(env):
     with pytest.raises(ConfigError, match="WEATHER_LAT"):
         Settings.from_env({"FEED_TOKEN": "x" * 32, **env})
+
+
+def test_house_defaults():
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32})
+    assert s.house_brief is False and s.house_at == time(7, 0) and s.house_voice == ""
+    assert (s.house_memo_max_s, s.house_upload_max_mb, s.house_pending_memos) == (60, 10, 10)
+    assert s.house_voice_name == s.cohost_voice
+    assert s.house_dir == s.data_dir / "house"
+
+
+def test_house_settings_are_read():
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32, "HOUSE_BRIEF": "1", "HOUSE_AT": "06:45",
+                           "HOUSE_VOICE": "af_bella", "HOUSE_MEMO_MAX_S": "90", "HOUSE_UPLOAD_MAX_MB": "20",
+                           "HOUSE_PENDING_MEMOS": "5"})
+    assert s.house_brief is True and s.house_at == time(6, 45) and s.house_voice_name == "af_bella"
+    assert (s.house_memo_max_s, s.house_upload_max_mb, s.house_pending_memos) == (90, 20, 5)
+
+
+@pytest.mark.parametrize("name,value", [("HOUSE_MEMO_MAX_S", "4"), ("HOUSE_MEMO_MAX_S", "601"),
+                                        ("HOUSE_MEMO_MAX_S", "abc"), ("HOUSE_UPLOAD_MAX_MB", "0"),
+                                        ("HOUSE_UPLOAD_MAX_MB", "51"), ("HOUSE_PENDING_MEMOS", "0"),
+                                        ("HOUSE_PENDING_MEMOS", "101")])
+def test_house_setting_bounds(name, value):
+    with pytest.raises(ConfigError, match=name):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, name: value})
+
+
+@pytest.mark.parametrize("value", ["7am", "25:00", "", "07:61"])
+def test_house_at_must_be_a_time(value):
+    if value == "":
+        assert Settings.from_env({"FEED_TOKEN": "x" * 32, "HOUSE_AT": value}).house_at == time(7, 0)
+        return
+    with pytest.raises(ConfigError, match="HOUSE_AT"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "HOUSE_AT": value})

@@ -8,6 +8,7 @@ ITUNES = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ET.register_namespace("itunes", ITUNES)
 TITLE = "Morning Brief"
 DEEP_DIVE_TITLE = "Morning Brief: Deep Dives"
+HOUSE_TITLE = "House Brief"
 
 
 def episode_title(date_str: str) -> str:
@@ -85,6 +86,21 @@ def build_deep_dive_feed(episodes: list[dict], base_url: str, token: str) -> byt
         _sub(item, "pubDate", format_datetime(datetime.fromisoformat(ep["published_at"])))
         _sub(item, "enclosure", url=f"{base_url}/audio/{token}/deep-dives/{ep['id']}.mp3?v={version}",
              length=ep["audio_bytes"], type="audio/mpeg")
+        _sub(item, f"{{{ITUNES}}}duration", str(round(ep["duration_s"])))
+        _sub(item, "description", ep["description"])
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+
+
+def build_house_feed(episodes: list[dict], base_url: str, audio_url, cover_path: str) -> bytes:
+    """The House Brief feed. `audio_url(episode)` gives an episode's absolute audio URL (without the cache-buster)."""
+    rss, channel = _channel(HOUSE_TITLE, "A private daily briefing for the house.", base_url, cover_path)
+    for ep in episodes:
+        version = int(datetime.fromisoformat(ep["updated_at"]).timestamp())
+        item = _sub(channel, "item")
+        _sub(item, "title", ep["title"])
+        _sub(item, "guid", f"house-{ep['date']}", isPermaLink="false")
+        _sub(item, "pubDate", format_datetime(datetime.fromisoformat(ep["created_at"])))
+        _sub(item, "enclosure", url=f"{audio_url(ep)}?v={version}", length=ep["audio_bytes"], type="audio/mpeg")
         _sub(item, f"{{{ITUNES}}}duration", str(round(ep["duration_s"])))
         _sub(item, "description", ep["description"])
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True)

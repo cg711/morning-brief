@@ -209,3 +209,33 @@ def test_prune_job_runs_notes_housekeeping(conn, settings):
                  ((date(2026, 9, 25) - timedelta(days=1)).isoformat(), NOW.isoformat()))
     scheduler.prune_job(conn, settings, lambda: NOW)
     assert conn.execute("SELECT COUNT(*) FROM countdowns").fetchone()[0] == 0
+
+
+def test_house_jobs_registered_only_when_on(conn, settings):
+    from dataclasses import replace
+
+    off = scheduler.build(settings, conn, lambda: NOW, lambda t: True)
+    assert not {"house", "house_retry"} & {j.id for j in off.get_jobs()}
+    on = scheduler.build(replace(settings, house_brief=True), conn, lambda: NOW, lambda t: True)
+    jobs = {j.id: str(j.trigger) for j in on.get_jobs()}
+    assert "hour='7', minute='0'" in jobs["house"] and "hour='7', minute='30'" in jobs["house_retry"]
+
+
+def test_house_retry_wraps_past_midnight(conn, settings):
+    from dataclasses import replace
+
+    s = replace(settings, house_brief=True, house_at=time(23, 45))
+    jobs = {j.id: str(j.trigger) for j in scheduler.build(s, conn, lambda: NOW, lambda t: True).get_jobs()}
+    assert "hour='23', minute='45'" in jobs["house"] and "hour='0', minute='15'" in jobs["house_retry"]
+
+
+def test_prune_job_also_prunes_the_house(conn, settings):
+    from datetime import date
+
+    from morning_brief import house
+
+    for n in range(1, 17):
+        house.save_episode(conn, date(2026, 9, 9 + n), {"title": "t"}, duration_s=1, audio_bytes=1, word_count=1,
+                           chapters=None, now=NOW)
+    scheduler.prune_job(conn, settings, lambda: NOW)
+    assert len(house.list_episodes(conn)) == 14
