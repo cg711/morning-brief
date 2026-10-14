@@ -250,7 +250,7 @@ def test_section_must_cite():
 def test_passages_order():
     script = deep_dive_script(sections=3)
     out = deepdives.passages(script)
-    assert out[0] == "Morning Brief deep dive: How the Fed Began."
+    assert out[0] == "Deep dive: How the Fed Began."
     assert out[1] == "Welcome to the deep dive."
     assert out[2].startswith("Part 1. word")
     assert out[-1] == "Thanks for listening." and len(out) == 6
@@ -259,7 +259,7 @@ def test_passages_order():
 def test_passages_map_speakers_to_voices():
     script = two_host_script(sections=3)
     out = deepdives.passages(script, host_voice="H", cohost_voice="C")
-    assert out[0] == "Morning Brief deep dive: How the Fed Began." and out[1] == script["intro"]
+    assert out[0] == "Deep dive: How the Fed Began." and out[1] == script["intro"]
     lines = script["sections"][0]["lines"]
     assert out[2] == [("H", "Part 1."), ("H", lines[0]["text"]), ("C", lines[1]["text"])]
     assert out[-1] == script["outro"] and len(out) == 6

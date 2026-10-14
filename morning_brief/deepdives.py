@@ -622,7 +622,7 @@ def passages(script: dict, *, host_voice: str | None = None, cohost_voice: str |
     """What to speak, in order: title line, intro, one passage per section, outro. A two-host section is a
     list of (voice, text) lines: the host reads the heading, then the dialogue."""
     voices = {"host": host_voice, "cohost": cohost_voice}
-    out: list = [f"Morning Brief deep dive: {script['title']}.", script["intro"]]
+    out: list = [f"Deep dive: {script['title']}.", script["intro"]]
     for s in script["sections"]:
         if "lines" in s:
             out.append([(host_voice, f"{s['heading']}.")] + [(voices[l["speaker"]], l["text"]) for l in s["lines"]])
