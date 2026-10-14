@@ -85,3 +85,35 @@ def test_describe_deep_dive_numbers_sources():
     assert text.startswith("Intro.")
     assert "1. Fed History — Federal Reserve (https://f.test)" in text
     assert "2. Encyclopedia (https://e.test)" in text
+
+
+def test_house_feed():
+    import xml.etree.ElementTree as ET
+
+    from morning_brief import podcast
+
+    episodes = [{"date": "2026-09-25", "title": "House brief: Friday, September 25",
+                 "created_at": "2026-09-25T12:00:00+00:00", "updated_at": "2026-09-25T12:00:00+00:00",
+                 "audio_bytes": 1234, "duration_s": 95.2, "description": "Hello"}]
+    xml = podcast.build_house_feed(episodes, "https://h.test", lambda ep: f"https://h.test/audio/{ep['date']}.mp3",
+                                   "/feed/house-cover.png")
+    channel = ET.fromstring(xml).find("channel")
+    assert channel.find("title").text == "House Brief"
+    assert channel.find(f"{{{podcast.ITUNES}}}image").get("href") == "https://h.test/feed/house-cover.png"
+    item = channel.find("item")
+    assert item.find("title").text == "House brief: Friday, September 25"
+    assert item.find("guid").text == "house-2026-09-25"
+    enclosure = item.find("enclosure")
+    assert enclosure.get("url").startswith("https://h.test/audio/2026-09-25.mp3?v=")
+    assert enclosure.get("length") == "1234" and enclosure.get("type") == "audio/mpeg"
+    assert item.find(f"{{{podcast.ITUNES}}}duration").text == "95"
+    assert item.find("description").text == "Hello"
+
+
+def test_house_cover_exists():
+    from pathlib import Path
+
+    from morning_brief import podcast
+
+    path = Path(podcast.__file__).parent / "static" / "house-cover.png"
+    assert path.read_bytes()[:4] == b"\x89PNG"

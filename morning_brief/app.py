@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, inbox_routes, notes_routes, notify, pipeline, podcast, retention, scheduler, share_routes
+from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, house_render, house_routes, inbox_routes, notes_routes, notify, pipeline, podcast, retention, scheduler, share_routes
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
@@ -53,7 +53,8 @@ def _local(iso: str) -> str:
 
 
 def create_app(settings: Settings | None = None, *, clock=None, start_run=None, start_render=None,
-                start_scheduler=True, notifier=None, start_daily_publish=None) -> FastAPI:
+                start_scheduler=True, notifier=None, start_daily_publish=None,
+                start_house=None) -> FastAPI:
     _configure_logging()
     settings = settings or Settings.from_env()
     clock = clock or (lambda: datetime.now(timezone.utc))
@@ -67,6 +68,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     start_run = start_run or (lambda trigger: scheduler.start_background_run(settings, trigger))
     start_render = start_render or (lambda topic_id: deepdive_render.start(settings, topic_id, notify=notifier))
     start_daily_publish = start_daily_publish or (lambda d: daily_worker.start_publish(settings, d))
+    start_house = start_house or (lambda: house_render.start(settings, notify=notifier))
     settings.deep_dives_dir.mkdir(parents=True, exist_ok=True)
 
     @asynccontextmanager
@@ -184,6 +186,10 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     notes_router = notes_routes.make_router(settings=settings, conn=conn, templates=templates, clock=clock,
                                             check_hx_request=check_hx_request)
     app.include_router(notes_router)
+    house_router = house_routes.make_router(
+        settings=settings, conn=conn, templates=templates, clock=clock, check_hx_request=check_hx_request,
+        check_token=check_token, start_house=start_house)
+    app.include_router(house_router)
 
     app.include_router(daily_routes.make_router(
         settings=settings, conn=conn, clock=clock, check_worker=dd_router.check_worker,
@@ -287,6 +293,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
             "deep_feed_url": f"{settings.public_base_url}/feed/deep-dives/{settings.feed_token}.xml",
             "dd": dd_router.section_view(),
             "nc": notes_router.view(),
+            "hs": house_router.view(),
             "month_cost": month_cost(),
             "last_run": f"{last['status']} {_local(last['started_at'])}" if last else None,
             "claude_offline": settings.claude_offline,

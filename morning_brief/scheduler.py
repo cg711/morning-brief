@@ -6,7 +6,7 @@ from datetime import datetime, time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import daily_worker, db, deepdives, notes, notify as notify_mod, pipeline, retention
+from . import daily_worker, db, deepdives, house, house_render, notes, notify as notify_mod, pipeline, retention
 from .config import Settings, TZ
 
 log = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ def prune_job(conn, settings: Settings, clock) -> None:
     result = deepdives.housekeeping(conn, settings.deep_dives_dir, now)
     log.info("deep-dive housekeeping: %s", result)
     log.info("notes housekeeping: %s", notes.housekeeping(conn, now.astimezone(TZ).date()))
+    log.info("house housekeeping: %s", house.prune(conn, settings.house_dir, now.astimezone(TZ).date()))
 
 
 def long_running_job(conn, settings: Settings, clock, notify) -> int:
@@ -102,6 +103,17 @@ def ready_by_job(settings: Settings, conn, clock, notify) -> bool:
     return daily_worker.check_missed(settings, conn, clock(), notify)
 
 
+HOUSE_RETRY_MINUTES = 30
+
+
+def house_job(settings: Settings) -> str:
+    return house_render.generate(settings)
+
+
+def house_retry_job(settings: Settings) -> str:
+    return house_render.retry(settings)
+
+
 def build(settings: Settings, conn, clock, start_run, notifier=None) -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone=TZ)
     common = {"misfire_grace_time": 3600, "coalesce": True, "replace_existing": True}
@@ -115,6 +127,12 @@ def build(settings: Settings, conn, clock, start_run, notifier=None) -> Backgrou
                       hour=settings.run_at.hour, minute=settings.run_at.minute, **common)
         sched.add_job(retry_if_missing, "cron", args=[conn, clock, start_run], id="retry",
                       hour=settings.retry_at.hour, minute=settings.retry_at.minute, **common)
+    if settings.house_brief:
+        sched.add_job(house_job, "cron", args=[settings], id="house",
+                      hour=settings.house_at.hour, minute=settings.house_at.minute, **common)
+        retry_at = (settings.house_at.hour * 60 + settings.house_at.minute + HOUSE_RETRY_MINUTES) % (24 * 60)
+        sched.add_job(house_retry_job, "cron", args=[settings], id="house_retry",
+                      hour=retry_at // 60, minute=retry_at % 60, **common)
     sched.add_job(prune_job, "cron", args=[conn, settings, clock], id="prune", hour=3, minute=0, **common)
     sched.add_job(long_running_job, "interval", args=[conn, settings, clock, notifier or notify_mod.send],
                   id="long_running", minutes=5, **common)

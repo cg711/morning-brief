@@ -22,5 +22,7 @@ def make(out: Path, top, bottom, lines) -> None:
     print(out)
 
 
-make(STATIC / "cover.png", (194, 65, 12), (251, 146, 60), ["Morning", "Brief"])
-make(STATIC / "deep-dives-cover.png", (30, 58, 138), (96, 165, 250), ["Deep", "Dives"])
+if __name__ == "__main__":
+    make(STATIC / "cover.png", (194, 65, 12), (251, 146, 60), ["Morning", "Brief"])
+    make(STATIC / "deep-dives-cover.png", (30, 58, 138), (96, 165, 250), ["Deep", "Dives"])
+    make(STATIC / "house-cover.png", (21, 128, 61), (74, 222, 128), ["House", "Brief"])

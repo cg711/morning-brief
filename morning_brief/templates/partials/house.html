@@ -1,0 +1,140 @@
+{% if hs.enabled %}
+<section id="house-card" class="card notes">
+  <h2>House</h2>
+  {% if hs.error %}<p class="warn small">{{ hs.error }}</p>{% endif %}
+  {% if hs.notice %}<p class="muted small">{{ hs.notice }}</p>{% endif %}
+  <p class="muted small">
+    {% if hs.last %}Last episode: {{ hs.last.date }} ({{ hs.last.minutes }} min).{% else %}No episode yet.{% endif %}
+    {% if hs.last_error %}<span class="warn">Last problem: {{ hs.last_error }}</span>{% endif %}
+  </p>
+  <form class="inline-form" hx-post="/house/generate" hx-target="#house-card" hx-swap="outerHTML">
+    <button type="submit">Generate now</button>
+  </form>
+  <label for="house-feed-url">House feed</label>
+  <div class="copy">
+    <input id="house-feed-url" readonly value="{{ hs.feed_url }}">
+    <button type="button" data-copy="house-feed-url">Copy</button>
+  </div>
+  <h3 class="sub">What the next brief would say ({{ hs.preview_day }})</h3>
+  {% if hs.preview %}
+    {% for line in hs.preview %}<p class="small">{{ line }}</p>{% endfor %}
+  {% else %}
+    <p class="muted small">Nothing due: no episode would be made.</p>
+  {% endif %}
+
+  <h3 class="sub">Housemates</h3>
+  {% if hs.members %}
+    <ul class="note-list">
+      {% for m in hs.members %}
+        <li><span>{{ m.name }}</span>
+          <button class="small-button danger" hx-delete="/house/members/{{ m.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Remove {{ m.name }}?">Remove</button></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted small">No housemates yet.</p>
+  {% endif %}
+  <form class="inline-form" hx-post="/house/members" hx-target="#house-card" hx-swap="outerHTML">
+    <input name="name" maxlength="30" placeholder="Name" aria-label="Housemate name">
+    <button type="submit">Add housemate</button>
+  </form>
+
+  <h3 class="sub">Chores</h3>
+  {% if hs.chores %}
+    <ul class="note-list">
+      {% for c in hs.chores %}
+        <li><span><strong>{{ c.name }}</strong> · {{ c.weekday }}s · next {{ c.next }}: {{ c.who or "unassigned" }}
+            {% if c.rotation %}<span class="muted small">(rotates: {{ c.rotation|join(" → ") }})</span>{% endif %}</span>
+          {% if c.open_day %}<button class="small-button" hx-post="/house/chores/{{ c.id }}/done" hx-target="#house-card" hx-swap="outerHTML">Done ({{ c.open_label }})</button>{% endif %}
+          <button class="small-button danger" hx-delete="/house/chores/{{ c.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Delete this chore?">Delete</button></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  <form class="inline-form" hx-post="/house/chores" hx-target="#house-card" hx-swap="outerHTML">
+    <input name="name" maxlength="60" placeholder="Trash night" aria-label="Chore name">
+    <select name="weekday" aria-label="Weekday">
+      {% for n, label in hs.weekdays %}<option value="{{ n }}">{{ label }}</option>{% endfor %}
+    </select>
+    <input name="start" type="date" value="{{ hs.today }}" aria-label="Starts">
+    <span class="checks">
+      {% for m in hs.members %}<label><input type="checkbox" name="rotation" value="{{ m.id }}"> {{ m.name }}</label>{% endfor %}
+    </span>
+    <button type="submit">Add chore</button>
+  </form>
+  <p class="muted small">The turn moves to the next ticked housemate each week, in the order listed above.</p>
+
+  <h3 class="sub">Hosting</h3>
+  {% for e in hs.events %}
+    <div class="card">
+      <p><strong>{{ e.title }}</strong> · {{ e.when }}{% if e.host %} · host {{ e.host }}{% endif %}
+        <button class="small-button danger" hx-delete="/house/events/{{ e.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Delete this event?">Delete</button></p>
+      {% if e.prep %}
+        <ul class="note-list">
+          {% for p in e.prep %}
+            <li><span>{% if p.done %}✓ {% endif %}{{ p.text }}</span>
+              {% if not p.done %}<button class="small-button" hx-post="/house/prep/{{ p.id }}/tick" hx-target="#house-card" hx-swap="outerHTML">Done</button>{% endif %}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  {% endfor %}
+  <form class="inline-form" hx-post="/house/events" hx-target="#house-card" hx-swap="outerHTML">
+    <input name="title" maxlength="80" placeholder="Game night" aria-label="Event">
+    <input name="day" type="date" min="{{ hs.today }}" aria-label="Date">
+    <select name="host" aria-label="Host"><option value="">no host yet</option>
+      {% for m in hs.members %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+    </select>
+    <textarea name="prep" rows="2" placeholder="Prep items, one per line" aria-label="Prep items"></textarea>
+    <button type="submit">Add event</button>
+  </form>
+
+  <h3 class="sub">Upkeep</h3>
+  {% if hs.upkeep %}
+    <ul class="note-list">
+      {% for u in hs.upkeep %}
+        <li><span><strong>{{ u.label }}</strong> · due {{ u.due }} ({{ u.state }})</span>
+          <button class="small-button" hx-post="/house/upkeep/{{ u.id }}/done" hx-target="#house-card" hx-swap="outerHTML">Done today</button>
+          <button class="small-button danger" hx-delete="/house/upkeep/{{ u.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Delete this reminder?">Delete</button></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  <form class="inline-form" hx-post="/house/upkeep" hx-target="#house-card" hx-swap="outerHTML">
+    <input name="label" maxlength="60" placeholder="Furnace filter" aria-label="Upkeep">
+    <select name="kind" aria-label="How often"><option value="every">every N days</option><option value="yearly">every year</option></select>
+    <input name="every_days" type="number" min="1" max="3650" placeholder="days" aria-label="Every how many days">
+    <input name="month" type="number" min="1" max="12" placeholder="month" aria-label="Month (yearly)">
+    <input name="day" type="number" min="1" max="31" placeholder="day" aria-label="Day (yearly)">
+    <input name="last_done" type="date" aria-label="Last done (optional)">
+    <button type="submit">Add reminder</button>
+  </form>
+
+  <h3 class="sub">To-dos</h3>
+  {% if hs.todos %}
+    <ul class="note-list">
+      {% for t in hs.todos %}
+        <li><span>{{ t.text }}{% if t.due %} · due {{ t.due }}{% endif %} · {{ t.who or "unclaimed" }}</span>
+          <form class="inline-form" hx-post="/house/todos/{{ t.id }}/claim" hx-target="#house-card" hx-swap="outerHTML">
+            <select name="member" aria-label="Claimed by"><option value="">nobody</option>
+              {% for m in hs.members %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+            </select><button type="submit">Claim</button></form>
+          <button class="small-button" hx-post="/house/todos/{{ t.id }}/done" hx-target="#house-card" hx-swap="outerHTML">Done</button>
+          <button class="small-button danger" hx-delete="/house/todos/{{ t.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Delete this to-do?">Delete</button></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  <form class="inline-form" hx-post="/house/todos" hx-target="#house-card" hx-swap="outerHTML">
+    <input name="text" maxlength="200" placeholder="Buy light bulbs" aria-label="To-do">
+    <input name="due" type="date" aria-label="Due (optional)">
+    <button type="submit">Add to-do</button>
+  </form>
+
+  {% if hs.notes %}
+    <h3 class="sub">Notes from housemates</h3>
+    <ul class="note-list">
+      {% for n in hs.notes %}
+        <li><span>{{ n.who or "You" }}: {{ n.text }}</span>
+          <button class="small-button danger" hx-delete="/house/notes/{{ n.id }}" hx-target="#house-card" hx-swap="outerHTML">Delete</button></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endif %}

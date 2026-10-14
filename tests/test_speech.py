@@ -135,3 +135,30 @@ def test_script_chapters_with_a_personal_segment():
     assert [title for title, _ in marks] == ["Introduction", "Your morning", "Storm hits coast",
                                              "Council passes budget", "Wrap-up"]
     assert [start for _, start in marks] == [0.0, 5.0, 20.0, 40.0, 60.0]
+
+
+def test_fake_synthesize_passes_clips_through_unspoken():
+    clip = speech.Clip(np.full(24000, 0.1, dtype=np.float32))  # exactly one second
+    audio = speech.fake_synthesize(["one two three", clip, "four five six"], "v", Path("."), None)
+    assert audio.starts == pytest.approx([0.0, 1.25 + 0.6, 1.25 + 0.6 + 1.0 + 0.6])
+    assert audio.duration == pytest.approx(1.25 + 0.6 + 1.0 + 0.6 + 1.25)
+    assert is_mp3(audio.mp3)
+
+
+def test_synthesize_passes_clips_through(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    class FakeKokoro:
+        def __init__(self, *args):
+            pass
+
+        def create(self, text, voice, speed, lang):
+            return np.full(2400, 0.05, dtype=np.float32), 24000  # 0.1 s of "speech"
+
+    monkeypatch.setitem(sys.modules, "kokoro_onnx", types.SimpleNamespace(Kokoro=FakeKokoro))
+    monkeypatch.setattr(speech, "ensure_models", lambda directory: (tmp_path / "m", tmp_path / "v"))
+    clip = speech.Clip(np.full(24000, 0.1, dtype=np.float32))
+    audio = speech.synthesize(["hello", clip, "bye"], "v", tmp_path, None)
+    assert audio.starts == pytest.approx([0.0, 0.1 + 0.6, 0.1 + 0.6 + 1.0 + 0.6])
+    assert is_mp3(audio.mp3)

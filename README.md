@@ -128,6 +128,19 @@ The phone Shortcut can send notes too; see [shortcuts/README.md](shortcuts/READM
 
 Share a link or some text from any iPhone app to a **Morning Brief** Shortcut. It asks for an optional note and whether to put the topic at the top or the end of the queue, then adds a deep dive with your page defaults. Set `INBOX_TOKEN`, then follow [shortcuts/README.md](shortcuts/README.md). The endpoint is `POST /api/inbox`; like the rest of `/api/`, it's reachable only on your tailnet and never through Funnel.
 
+## House brief (optional)
+
+A second, shared podcast for a household. Set `HOUSE_BRIEF=1` and a **House** card appears on the page, where you manage:
+- **Housemates**, by name.
+- **Chores** that rotate weekly: pick a weekday and which housemates take turns. The brief says whose turn it is the day before and the day of, and keeps nagging for two days if the chore isn't ticked.
+- **Hosting**: a gathering with a date, a host and a prep list. It's mentioned for the week leading up to it, with whatever prep is still undone.
+- **Upkeep** reminders: "every N days" (furnace filter) or yearly on a date (hose bibs).
+- **To-dos** that can be claimed and ticked off, and notes.
+
+Each morning at `HOUSE_AT` the server writes the script itself from sentence templates, so it needs no Mac and no Claude usage, and speaks it with the same engine as your other episodes (in the co-host voice by default). **A day with nothing due makes no episode.** A failed run sends a push and retries 30 minutes later. The card shows what the next brief would say, and **Generate now** makes one on demand.
+
+The episode has its own podcast feed, `…/feed/house/<FEED_TOKEN>.xml`, served the same way as your other feeds (tailnet only). If you turn on `FUNNEL_FEEDS`, the House feed is reachable publicly like your other feeds (the token is still required); leave it off to keep the House feed tailnet-only. Letting housemates listen and add items themselves comes in a later release.
+
 ## Login and sharing (optional)
 
 **Login.** Set `UI_PASSWORD` in `.env` and restart. The web UI then asks for the password once per device and remembers it with a signed cookie for `SESSION_DAYS` days (default 90).

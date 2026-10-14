@@ -47,6 +47,11 @@ class Audio(NamedTuple):
 Line = tuple[str, str]  # (voice, text): one turn of a two-host dialogue
 
 
+class Clip(NamedTuple):
+    """Ready-made samples (a recorded voice memo): a 1-D mono float32 array at SAMPLE_RATE, spliced in as it is, not spoken."""
+    samples: np.ndarray
+
+
 def _join_lines(parts: list[np.ndarray], sample_rate: int) -> np.ndarray:
     out = []
     for n, part in enumerate(parts):
@@ -120,7 +125,7 @@ def ensure_models(models_dir: Path, fetch=_fetch) -> tuple[Path, Path]:
     return paths[0], paths[1]
 
 
-def synthesize(passages: list[str | list[Line]], voice: str, models_dir: Path,
+def synthesize(passages: list[str | list[Line] | Clip], voice: str, models_dir: Path,
                music: Music | None = None) -> Audio:
     """Speak each passage with Kokoro, lay it out with pauses (and music), encode MP3. The model is loaded
     only for this call."""
@@ -131,6 +136,9 @@ def synthesize(passages: list[str | list[Line]], voice: str, models_dir: Path,
     try:
         chunks, sample_rate = [], SAMPLE_RATE
         for passage in passages:
+            if isinstance(passage, Clip):
+                chunks.append(passage.samples.astype(np.float32, copy=False))
+                continue
             if isinstance(passage, str):
                 audio, sample_rate = kokoro.create(passage, voice=voice, speed=SPEED, lang="en-us")
             else:
@@ -153,10 +161,16 @@ def _fake_speech(text: str) -> np.ndarray:
     return np.zeros(int(SAMPLE_RATE * max(0.5, len(text.split()) / FAKE_WORDS_PER_SECOND)), dtype=np.float32)
 
 
-def fake_synthesize(passages: list[str | list[Line]], voice: str, models_dir: Path,
+def fake_synthesize(passages: list[str | list[Line] | Clip], voice: str, models_dir: Path,
                     music: Music | None = None) -> Audio:
     """Silent speech sized like the real thing, laid out like the real thing. For development on macOS."""
-    chunks = [_fake_speech(p) if isinstance(p, str) else _join_lines([_fake_speech(t) for _, t in p], SAMPLE_RATE)
-              for p in passages]
+    chunks = []
+    for p in passages:
+        if isinstance(p, Clip):
+            chunks.append(p.samples.astype(np.float32, copy=False))
+        elif isinstance(p, str):
+            chunks.append(_fake_speech(p))
+        else:
+            chunks.append(_join_lines([_fake_speech(t) for _, t in p], SAMPLE_RATE))
     samples, starts = assemble(chunks, SAMPLE_RATE, music)
     return Audio(encode_mp3(samples, SAMPLE_RATE), len(samples) / SAMPLE_RATE, starts)
