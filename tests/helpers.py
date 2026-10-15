@@ -1,6 +1,10 @@
+import io
 import json
+import wave
 from datetime import datetime, timezone
 from types import SimpleNamespace
+
+import numpy as np
 
 from morning_brief import db
 from morning_brief.models import Item
@@ -89,3 +93,18 @@ def two_host_script(words=2400, sections=4, title="How the Fed Began"):
         section["lines"] = [{"speaker": "host", "text": " ".join(spoken[:half])},
                             {"speaker": "cohost", "text": " ".join(spoken[half:])}]
     return script
+
+
+def wav_bytes(seconds=1.0, rate=24000, freq=440.0, amp=0.5, channels=1) -> bytes:
+    """A sine-tone WAV file as bytes."""
+    t = np.arange(int(rate * seconds)) / rate
+    pcm = (np.sin(2 * np.pi * freq * t) * amp * 32767).astype("<i2")
+    if channels == 2:
+        pcm = np.repeat(pcm, 2)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()

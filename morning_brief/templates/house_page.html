@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>House Brief</title>
+  <style>
+    :root { --bg: #f4f7f4; --surface: #fff; --text: #1a1f1a; --muted: #5f6b5f; --accent: #15803d; --border: #dbe3db; --err: #b91c1c; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #111512; --surface: #1b211c; --text: #eef3ee; --muted: #9aa89a; --accent: #4ade80; --border: #2f3a31; --err: #f87171; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 640px; margin: 0 auto; padding: 20px 16px 56px; }
+    .kicker { color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: .8rem; margin: 0; }
+    h1 { margin: 2px 0 12px; line-height: 1.2; }
+    h2 { font-size: 1.1rem; margin: 28px 0 8px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin: 8px 0; }
+    .muted { color: var(--muted); font-size: .9rem; }
+    .msg { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); }
+    .err { border-color: var(--err); color: var(--err); }
+    audio { width: 100%; margin: 8px 0; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 8px 0; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+    li:first-child { border-top: 0; }
+    form.row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    input[type=text], input[type=date], input[type=file], input[readonly] { font: inherit; padding: 9px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); flex: 1 1 180px; min-width: 0; }
+    button { font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+    button.quiet { background: transparent; color: var(--accent); }
+    button:disabled { opacity: .6; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="kicker">House Brief</p>
+  <h1>Hi {{ v.name }}</h1>
+  {% if v.error %}<p class="msg err" role="alert">{{ v.error }}</p>{% endif %}
+  {% if v.ok %}<p class="msg" role="status">{{ v.ok }}</p>{% endif %}
+
+  {% if v.latest %}
+  <h2>Latest episode</h2>
+  <audio controls preload="none" src="/h/{{ v.token }}/audio/{{ v.latest }}.mp3"></audio>
+  {% endif %}
+  <p class="muted">Add this feed to your podcast app:</p>
+  <input readonly value="{{ v.feed_url }}" aria-label="Your House Brief feed">
+
+  {% if v.chores %}
+  <h2>Chores</h2>
+  <div class="card"><ul>
+    {% for c in v.chores %}
+    <li><span><strong>{{ c.name }}</strong> · {{ c.when }}{% if c.who %} · {{ "you" if c.mine else c.who }}{% endif %}</span>
+      <form method="post" action="/h/{{ v.token }}/chores/{{ c.id }}/done"><button class="quiet" type="submit">Done</button></form></li>
+    {% endfor %}
+  </ul></div>
+  {% endif %}
+
+  {% if v.events %}
+  <h2>Hosting</h2>
+  {% for e in v.events %}
+  <div class="card">
+    <strong>{{ e.title }}</strong> · {{ e.when }}{% if e.host %} · host {{ e.host }}{% endif %}
+    {% if e.prep %}<ul>
+      {% for p in e.prep %}
+      <li><span>{% if p.done %}✓ {% endif %}{{ p.text }}</span>
+        {% if not p.done %}<form method="post" action="/h/{{ v.token }}/prep/{{ p.id }}/done"><button class="quiet" type="submit">Done</button></form>{% endif %}</li>
+      {% endfor %}
+    </ul>{% endif %}
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  <h2>To-dos</h2>
+  <div class="card">
+    {% if v.todos %}<ul>
+      {% for t in v.todos %}
+      <li><span>{{ t.text }}{% if t.due %} · due {{ t.due }}{% endif %}{% if t.who %} · {{ "you" if t.mine else t.who }}{% endif %}</span>
+        <span>
+          {% if not t.who %}<form method="post" action="/h/{{ v.token }}/todos/{{ t.id }}/claim" style="display:inline"><button class="quiet" type="submit">I'll do it</button></form>{% endif %}
+          <form method="post" action="/h/{{ v.token }}/todos/{{ t.id }}/done" style="display:inline"><button class="quiet" type="submit">Done</button></form>
+        </span></li>
+      {% endfor %}
+    </ul>{% else %}<p class="muted">Nothing open.</p>{% endif %}
+    <form class="row" method="post" action="/h/{{ v.token }}/todos">
+      <input type="text" name="text" maxlength="200" placeholder="Buy light bulbs" aria-label="New to-do" required>
+      <input type="date" name="due" aria-label="Due (optional)">
+      <button type="submit">Add</button>
+    </form>
+  </div>
+
+  <h2>Leave a note for the house</h2>
+  <div class="card">
+    <p class="muted">It gets read out once in an upcoming episode.</p>
+    <form class="row" method="post" action="/h/{{ v.token }}/notes">
+      <input type="text" name="text" maxlength="300" placeholder="We're out of paper towels" aria-label="Note" required>
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+  <h2>Send a voice note</h2>
+  <div class="card">
+    <p class="muted">Up to {{ v.max_memo_s }} seconds. The owner listens first; once approved it plays for the whole house in an episode.</p>
+    {% if v.uploads %}
+    <div id="recorder" hidden data-max="{{ v.max_memo_s }}" data-action="/h/{{ v.token }}/memos">
+      <button type="button" id="rec-button">Record a voice note</button>
+      <p class="muted" id="rec-status" aria-live="polite"></p>
+    </div>
+    <form class="row" method="post" action="/h/{{ v.token }}/memos" enctype="multipart/form-data">
+      <input type="file" name="audio" accept="audio/*,video/mp4,.m4a,.mp3,.wav,.ogg,.webm,.caf" aria-label="Audio file (up to {{ v.max_upload_mb }} MB)" required>
+      <button type="submit">Upload a file</button>
+    </form>
+    {% else %}
+    <p class="muted">Voice notes are unavailable right now.</p>
+    {% endif %}
+  </div>
+</main>
+<script>{{ record_script }}</script>
+</body>
+</html>

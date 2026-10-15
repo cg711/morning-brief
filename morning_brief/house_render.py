@@ -111,7 +111,7 @@ def _generate_locked(settings: Settings, conn, day: date, manual: bool, synthesi
             clips[memo["id"]] = load_clip(house.memo_path(settings.house_dir, memo["id"]))
         except Exception as exc:
             log.warning("house memo %s can't be used: %s", memo["id"], type(exc).__name__)
-            house.reject_memo(conn, memo["id"])
+            house.reject_memo(conn, memo["id"], settings.house_dir)
             facts["memos"].remove(memo)
     if house_facts.is_empty(facts):
         return "nothing"

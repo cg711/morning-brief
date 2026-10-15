@@ -18,6 +18,8 @@ from .config import TZ
 
 NAME_MAX, TEXT_MAX, TODO_MAX, TITLE_MAX, PREP_MAX, LABEL_MAX = 30, 300, 200, 80, 100, 60
 PREP_ITEMS_MAX, EVERY_DAYS_MAX = 20, 3650
+MAX_OPEN_TODOS = 100       # flood caps: a link holder cannot grow the to-do list or the note queue without bound
+MAX_PENDING_NOTES = 100
 DATE_SPAN_DAYS = 3660  # about ten years either side of today
 _CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _lock = threading.RLock()
@@ -88,6 +90,11 @@ def revoke_member(conn, member_id: int, now: datetime) -> bool:
                                (now.isoformat(), member_id)).rowcount
         if not revoked:
             return False  # nothing was written, so the empty transaction commits harmlessly
+        # A leaked link is cleaned up too: unread notes go, unapproved voice notes are rejected (their files are
+        # removed by the owner route or the nightly prune). Their to-dos stay.
+        conn.execute("DELETE FROM house_notes WHERE member_id = ? AND announced_on IS NULL", (member_id,))
+        conn.execute("UPDATE house_memos SET status = 'rejected' WHERE member_id = ? AND status = 'pending'",
+                     (member_id,))
         for row in conn.execute("SELECT id, rotation_json FROM house_chores").fetchall():
             rotation = json.loads(row["rotation_json"])
             if member_id in rotation:
@@ -144,6 +151,8 @@ def add_todo(conn, text, added_by: int | None, due: date | None, now: datetime) 
     if due is not None:
         _sane_date(due, now.astimezone(TZ).date())
     with _lock:
+        if conn.execute("SELECT COUNT(*) FROM house_todos WHERE done_at IS NULL").fetchone()[0] >= MAX_OPEN_TODOS:
+            raise HouseError("the to-do list is full for now: finish a few first")
         return conn.execute("INSERT INTO house_todos (text, added_by, due, created_at) VALUES (?, ?, ?, ?)",
                             (text, added_by, due.isoformat() if due else None, now.isoformat())).lastrowid
 
@@ -176,6 +185,8 @@ def delete_todo(conn, todo_id: int) -> bool:
 def add_note(conn, text, member_id: int | None, now: datetime) -> int:
     text = _clean(text, "note", TEXT_MAX)
     with _lock:
+        if conn.execute("SELECT COUNT(*) FROM house_notes WHERE announced_on IS NULL").fetchone()[0] >= MAX_PENDING_NOTES:
+            raise HouseError("there are already a lot of notes waiting: try again after the next episode")
         return conn.execute("INSERT INTO house_notes (member_id, text, created_at) VALUES (?, ?, ?)",
                             (member_id, text, now.isoformat())).lastrowid
 
@@ -334,10 +345,14 @@ def mark_announced(conn, facts: dict, today: date) -> None:
                          f"AND id IN ({_in_clause(memo_ids)})", (iso, *memo_ids))
 
 
-def reject_memo(conn, memo_id: int) -> bool:
+def reject_memo(conn, memo_id: int, house_dir: Path | None = None) -> bool:
+    """Reject a pending or approved memo; with `house_dir`, delete its audio at once."""
     with _lock:
-        return conn.execute("UPDATE house_memos SET status = 'rejected' WHERE id = ? "
-                            "AND status IN ('pending', 'approved')", (memo_id,)).rowcount > 0
+        rejected = conn.execute("UPDATE house_memos SET status = 'rejected' WHERE id = ? "
+                                "AND status IN ('pending', 'approved')", (memo_id,)).rowcount > 0
+    if rejected and house_dir is not None:
+        memo_path(house_dir, memo_id).unlink(missing_ok=True)
+    return rejected
 
 
 def prune(conn, house_dir: Path, today: date, keep: int = KEEP_EPISODES) -> dict:
@@ -364,3 +379,52 @@ def prune(conn, house_dir: Path, today: date, keep: int = KEEP_EPISODES) -> dict
             path.unlink(missing_ok=True)
             memo_files += 1
     return {"episodes": len(old), "memo_files": memo_files}
+
+
+# --- housemate links and voice memos (8b) --------------------------------------------------------------------
+
+def member_for_token(conn, token):
+    """The active housemate who owns this link token, or None for anything else (unknown, revoked, malformed)."""
+    if not isinstance(token, str) or not token.isascii() or not 16 <= len(token) <= 64:
+        return None
+    return conn.execute("SELECT * FROM house_members WHERE token = ? AND revoked_at IS NULL", (token,)).fetchone()
+
+
+def pending_memo_count(conn, member_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM house_memos WHERE member_id = ? AND status = 'pending'",
+                        (member_id,)).fetchone()[0]
+
+
+def add_memo(conn, member_id: int, duration_s: float, now: datetime, max_pending: int) -> int:
+    if not 0 < duration_s <= 3600:
+        raise HouseError("that recording has no usable length")
+    with _lock:
+        if pending_memo_count(conn, member_id) >= max_pending:
+            raise HouseError(f"you already have {max_pending} voice notes waiting for approval")
+        return conn.execute("INSERT INTO house_memos (member_id, duration_s, status, created_at) "
+                            "VALUES (?, ?, 'pending', ?)", (member_id, float(duration_s), now.isoformat())).lastrowid
+
+
+def get_memo(conn, memo_id: int):
+    return conn.execute("SELECT * FROM house_memos WHERE id = ?", (memo_id,)).fetchone()
+
+
+def list_pending_memos(conn) -> list:
+    return conn.execute("SELECT * FROM house_memos WHERE status = 'pending' ORDER BY id").fetchall()
+
+
+def approved_waiting_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) FROM house_memos WHERE status = 'approved' AND played_on IS NULL"
+                        ).fetchone()[0]
+
+
+def approve_memo(conn, memo_id: int, now: datetime) -> bool:
+    with _lock:
+        return conn.execute("UPDATE house_memos SET status = 'approved', approved_at = ? "
+                            "WHERE id = ? AND status = 'pending'", (now.isoformat(), memo_id)).rowcount > 0
+
+
+def delete_memo(conn, memo_id: int) -> None:
+    """Remove a pending memo row (used when its audio couldn't be saved)."""
+    with _lock:
+        conn.execute("DELETE FROM house_memos WHERE id = ? AND status = 'pending'", (memo_id,))

@@ -325,3 +325,118 @@ def test_dates_near_the_edge_of_the_window_are_accepted(conn):
     house.add_event(conn, "Party", edge, None, [], NOW, TODAY)
     house.add_todo(conn, "Bulbs", None, edge, NOW)
     house.add_upkeep(conn, "Filter", "every", NOW, TODAY, every_days=5, last_done=date(2016, 10, 1))
+
+
+def test_member_for_token_finds_only_active_housemates(conn):
+    sam = member(conn, "Sam")
+    token = house.list_members(conn)[0]["token"]
+    found = house.member_for_token(conn, token)
+    assert found["id"] == sam and found["name"] == "Sam"
+    for bad in ("", "x", "a" * 22, token[:-1], token + "x", "é" * 22, None, 5, "../" + token, token + "\x00"):
+        assert house.member_for_token(conn, bad) is None
+    house.revoke_member(conn, sam, NOW)
+    assert house.member_for_token(conn, token) is None
+
+
+def test_memos_wait_for_approval(conn):
+    sam = member(conn, "Sam")
+    first = house.add_memo(conn, sam, 12.5, NOW, 3)
+    second = house.add_memo(conn, sam, 3.0, NOW, 3)
+    assert house.pending_memo_count(conn, sam) == 2
+    assert [m["id"] for m in house.list_pending_memos(conn)] == [first, second]
+    assert tuple(house.get_memo(conn, first)[k] for k in ("status", "duration_s", "member_id")) == ("pending", 12.5, sam)
+    assert house.approve_memo(conn, first, NOW) is True and house.approve_memo(conn, first, NOW) is False
+    assert house.get_memo(conn, first)["approved_at"] == NOW.isoformat()
+    assert house.approved_waiting_count(conn) == 1 and house.pending_memo_count(conn, sam) == 1
+    assert house.reject_memo(conn, second) is True and house.pending_memo_count(conn, sam) == 0
+    assert house.approve_memo(conn, second, NOW) is False and house.approve_memo(conn, 999, NOW) is False
+    assert house.get_memo(conn, 999) is None
+
+
+def test_the_pending_cap_is_per_housemate(conn):
+    sam, alex = member(conn, "Sam"), member(conn, "Alex")
+    house.add_memo(conn, sam, 5.0, NOW, 2)
+    house.add_memo(conn, sam, 5.0, NOW, 2)
+    with pytest.raises(house.HouseError, match="2 voice notes"):
+        house.add_memo(conn, sam, 5.0, NOW, 2)
+    assert house.add_memo(conn, alex, 5.0, NOW, 2)   # someone else is unaffected
+    assert conn.execute("SELECT COUNT(*) FROM house_memos").fetchone()[0] == 3
+
+
+@pytest.mark.parametrize("duration", [0, -1, 3601, float("nan")])
+def test_a_memo_needs_a_sane_length(conn, duration):
+    sam = member(conn, "Sam")
+    with pytest.raises(house.HouseError):
+        house.add_memo(conn, sam, duration, NOW, 3)
+    assert conn.execute("SELECT COUNT(*) FROM house_memos").fetchone()[0] == 0
+
+
+def test_delete_memo_only_removes_pending_ones(conn):
+    sam = member(conn, "Sam")
+    pending = house.add_memo(conn, sam, 5.0, NOW, 5)
+    approved = house.add_memo(conn, sam, 5.0, NOW, 5)
+    house.approve_memo(conn, approved, NOW)
+    house.delete_memo(conn, pending)
+    house.delete_memo(conn, approved)
+    assert [r["id"] for r in conn.execute("SELECT id FROM house_memos")] == [approved]
+
+
+def test_the_to_do_list_and_the_note_queue_have_flood_caps(conn):
+    a = member(conn)
+    assert (house.MAX_OPEN_TODOS, house.MAX_PENDING_NOTES) == (100, 100)
+    ids = [house.add_todo(conn, f"t{i}", a, None, NOW) for i in range(house.MAX_OPEN_TODOS)]
+    with pytest.raises(house.HouseError, match="to-do list is full for now: finish a few first"):
+        house.add_todo(conn, "one too many", a, None, NOW)
+    assert len(house.list_todos(conn)) == 100
+    house.finish_todo(conn, ids[0], a, NOW)                      # finishing frees a slot
+    house.add_todo(conn, "fits now", a, None, NOW)
+    for i in range(house.MAX_PENDING_NOTES):
+        house.add_note(conn, f"n{i}", a, NOW)
+    with pytest.raises(house.HouseError, match="lot of notes waiting: try again after the next episode"):
+        house.add_note(conn, "one too many", a, NOW)
+    assert len(house.pending_notes(conn)) == 100
+    conn.execute("UPDATE house_notes SET announced_on = '2026-09-25' WHERE id = (SELECT MIN(id) FROM house_notes)")
+    house.add_note(conn, "fits after an episode", a, NOW)        # announced notes don't count
+
+
+def test_rejecting_a_memo_deletes_its_audio_at_once(conn, tmp_path):
+    (tmp_path / "memos").mkdir()
+    pending, approved, played, nofile = (add_memo(conn, "pending"), add_memo(conn, "approved"),
+                                         add_memo(conn, "played", "2026-09-25"), add_memo(conn, "pending"))
+    for memo_id in (pending, approved, played):
+        house.memo_path(tmp_path, memo_id).write_bytes(b"wav")
+    assert house.reject_memo(conn, pending, tmp_path) is True
+    assert not house.memo_path(tmp_path, pending).exists()
+    assert house.reject_memo(conn, played, tmp_path) is False and house.memo_path(tmp_path, played).exists()
+    assert house.reject_memo(conn, nofile, tmp_path) is True        # a missing file is fine
+    assert house.reject_memo(conn, approved) is True and house.memo_path(tmp_path, approved).exists()  # no dir given
+
+
+def test_removing_a_member_clears_their_unread_notes_and_unapproved_memos(conn):
+    a, b = member(conn, "Sam"), member(conn, "Alex")
+    mine_unread, mine_read = house.add_note(conn, "mine unread", a, NOW), house.add_note(conn, "mine read", a, NOW)
+    theirs, owner = house.add_note(conn, "alex", b, NOW), house.add_note(conn, "owner", None, NOW)
+    conn.execute("UPDATE house_notes SET announced_on = '2026-09-24' WHERE id = ?", (mine_read,))
+    todo = house.add_todo(conn, "Sam's todo", a, None, NOW)
+    pending, approved, played, other = (add_memo(conn, "pending", member_id=a), add_memo(conn, "approved", member_id=a),
+                                        add_memo(conn, "played", "2026-09-24", member_id=a),
+                                        add_memo(conn, "pending", member_id=b))
+    assert house.revoke_member(conn, a, NOW) is True
+    assert {n["id"] for n in house.pending_notes(conn)} == {theirs, owner}
+    assert conn.execute("SELECT id FROM house_notes WHERE id = ?", (mine_read,)).fetchone() is not None   # announced: kept
+    assert conn.execute("SELECT id FROM house_notes WHERE id = ?", (mine_unread,)).fetchone() is None
+    statuses = dict(conn.execute("SELECT id, status FROM house_memos").fetchall())
+    assert statuses == {pending: "rejected", approved: "approved", played: "played", other: "pending"}
+    assert [t["id"] for t in house.list_todos(conn)] == [todo]
+
+
+def test_a_failed_removal_keeps_the_notes_and_memos(conn):
+    a = member(conn, "Sam")
+    house.add_note(conn, "keep me", a, NOW)
+    memo = add_memo(conn, "pending", member_id=a)
+    conn.execute("INSERT INTO house_chores (name, weekday, start_date, rotation_json, created_at) "
+                 "VALUES ('Bad', 2, ?, 'not json', ?)", (TODAY.isoformat(), NOW.isoformat()))
+    with pytest.raises(ValueError):
+        house.revoke_member(conn, a, NOW)
+    assert len(house.pending_notes(conn)) == 1
+    assert conn.execute("SELECT status FROM house_memos WHERE id = ?", (memo,)).fetchone()[0] == "pending"

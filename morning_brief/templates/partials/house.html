@@ -27,7 +27,17 @@
     <ul class="note-list">
       {% for m in hs.members %}
         <li><span>{{ m.name }}</span>
-          <button class="small-button danger" hx-delete="/house/members/{{ m.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Remove {{ m.name }}?">Remove</button></li>
+          <button class="small-button danger" hx-delete="/house/members/{{ m.id }}" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Remove {{ m.name }}? Their link stops working at once, and their unread notes and unapproved voice notes are deleted.">Remove</button>
+          {% if m.link %}
+          <div class="copy">
+            <input id="member-link-{{ m.id }}" readonly value="{{ m.link }}" aria-label="{{ m.name }}'s page link">
+            <button type="button" data-copy="member-link-{{ m.id }}">Copy link</button>
+          </div>
+          <div class="copy">
+            <input id="member-feed-{{ m.id }}" readonly value="{{ m.feed }}" aria-label="{{ m.name }}'s podcast feed">
+            <button type="button" data-copy="member-feed-{{ m.id }}">Copy feed</button>
+          </div>
+          {% endif %}</li>
       {% endfor %}
     </ul>
   {% else %}
@@ -37,6 +47,19 @@
     <input name="name" maxlength="30" placeholder="Name" aria-label="Housemate name">
     <button type="submit">Add housemate</button>
   </form>
+  {% if not hs.sharing %}<p class="muted small">Set SHARE_BASE_URL to your Funnel address to get a link for each housemate.</p>{% endif %}
+  {% if hs.pending_memos %}
+  <h3 class="sub">Voice notes waiting</h3>
+  <ul class="note-list">
+    {% for m in hs.pending_memos %}
+      <li><span>{{ m.who }} · {{ m.seconds }} s</span>
+        <audio controls preload="none" src="/house/memos/{{ m.id }}/audio"></audio>
+        <button class="small-button" hx-post="/house/memos/{{ m.id }}/approve" hx-target="#house-card" hx-swap="outerHTML">Approve</button>
+        <button class="small-button danger" hx-post="/house/memos/{{ m.id }}/reject" hx-target="#house-card" hx-swap="outerHTML" hx-confirm="Reject this voice note?">Reject</button></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if hs.approved_waiting %}<p class="muted small">{{ hs.approved_waiting }} approved, waiting to play in the next episode.</p>{% endif %}
 
   <h3 class="sub">Chores</h3>
   {% if hs.chores %}

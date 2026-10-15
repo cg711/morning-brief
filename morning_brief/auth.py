@@ -17,8 +17,8 @@ from pathlib import Path
 COOKIE = "mb_session"
 SECRET_FILE = "session_secret"
 SECRET_BYTES = 32
-# Token-gated or public paths that never need the login cookie (podcast apps, the Mac worker, share links).
-OPEN_PREFIXES = ("/static/", "/s/", "/feed/", "/audio/", "/api/")
+# Token-gated or public paths that never need the login cookie (podcast apps, the Mac worker, share links, housemate links).
+OPEN_PREFIXES = ("/static/", "/s/", "/h/", "/feed/", "/audio/", "/api/")
 _EXPIRY_RE = re.compile(r"[0-9]{1,12}")
 _SAFE_NEXT_RE = re.compile(r"/(?![/\\])[^\\\x00-\x1f\x7f]*")
 

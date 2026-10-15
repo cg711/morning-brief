@@ -2,10 +2,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import date, timedelta
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from morning_brief import house, house_facts
+from morning_brief import house, house_audio, house_facts, house_render, speech
 from morning_brief.app import create_app
 from tests.helpers import NOW  # 2026-09-25 08:00 Central, a Friday
 
@@ -352,3 +353,114 @@ def test_the_card_shows_the_house_feed_url(ui):
     html = ui.get("/").text
     assert f'id="house-feed-url" readonly value="https://brief.test/feed/house/{FEED}.xml"' in html
     assert 'data-copy="house-feed-url"' in html
+
+
+def test_the_owner_feed_still_matches_after_the_shared_helper(ui, settings):
+    from morning_brief import house_feed
+
+    script = {"title": "House brief: Friday, September 25", "intro": "Hi.", "outro": "Bye.", "sections": []}
+    house.save_episode(conn_of(ui), TODAY, script, duration_s=95.0, audio_bytes=4, word_count=5, chapters=None, now=NOW)
+    (ep,) = house_feed.episodes(conn_of(ui))
+    assert ep["date"] == "2026-09-25" and ep["title"] == "House brief: Friday, September 25"
+    assert set(ep) == {"date", "title", "created_at", "updated_at", "audio_bytes", "duration_s", "description"}
+
+
+def memo_with_audio(ui, settings, member_id, status="pending", seconds=2.0):
+    memo_id = house.add_memo(conn_of(ui), member_id, seconds, NOW, 10)
+    if status == "approved":
+        house.approve_memo(conn_of(ui), memo_id, NOW)
+    elif status == "rejected":
+        house.reject_memo(conn_of(ui), memo_id)
+    samples = (np.sin(2 * np.pi * 440 * np.arange(int(24000 * seconds)) / 24000) * 0.3).astype(np.float32)
+    house_audio.save_wav(house.memo_path(settings.house_dir, memo_id), samples)
+    return memo_id
+
+
+def test_the_card_shows_each_housemates_link_and_feed(settings):
+    with make_client(settings, house_brief=True, share_base_url="https://house.test") as c:
+        add_member(c, "Sam")
+        token = house.list_members(conn_of(c))[0]["token"]
+        html = c.get("/").text
+        assert f"https://house.test/h/{token}" in html and f"https://house.test/h/{token}/feed.xml" in html
+        assert 'data-copy="member-link-' in html
+    with make_client(settings, house_brief=True, share_base_url="") as c:
+        add_member(c, "Sam")
+        token = house.list_members(conn_of(c))[0]["token"]
+        html = c.get("/").text
+        assert f"/h/{token}" not in html and "SHARE_BASE_URL" in html
+
+
+def test_pending_voice_notes_are_listed_with_a_player(ui, settings):
+    sam = add_member(ui, "Sam")
+    memo = memo_with_audio(ui, settings, sam, seconds=12.4)
+    html = ui.get("/").text
+    assert "Voice notes waiting" in html and "Sam" in html and "12 s" in html
+    assert f'src="/house/memos/{memo}/audio"' in html
+    assert f"/house/memos/{memo}/approve" in html and f"/house/memos/{memo}/reject" in html
+
+
+def test_approve_and_reject(ui, settings):
+    sam = add_member(ui, "Sam")
+    keep, drop = memo_with_audio(ui, settings, sam), memo_with_audio(ui, settings, sam)
+    html = ui.post(f"/house/memos/{keep}/approve", headers=HX).text
+    assert house.get_memo(conn_of(ui), keep)["status"] == "approved" and "1 approved, waiting to play" in html
+    assert house.memo_path(settings.house_dir, drop).exists()
+    ui.post(f"/house/memos/{drop}/reject", headers=HX)
+    assert house.get_memo(conn_of(ui), drop)["status"] == "rejected"
+    assert not house.memo_path(settings.house_dir, drop).exists() and house.memo_path(settings.house_dir, keep).exists()
+    assert "Voice notes waiting" not in ui.get("/").text
+    for path in (f"/house/memos/{keep}/approve", f"/house/memos/{keep}/reject", f"/house/memos/{drop}/approve",
+                 "/house/memos/999/approve", "/house/memos/999/reject"):
+        assert ui.post(path, headers=HX).status_code == 200            # decided or unknown: a harmless no-op
+    assert house.get_memo(conn_of(ui), drop)["status"] == "rejected"
+
+
+def test_memo_routes_need_the_htmx_header_and_the_brief_on(ui, settings):
+    sam = add_member(ui, "Sam")
+    memo = memo_with_audio(ui, settings, sam)
+    assert ui.post(f"/house/memos/{memo}/approve").status_code == 403
+    assert ui.post(f"/house/memos/{memo}/reject").status_code == 403
+    with make_client(settings, house_brief=False) as off:
+        assert off.post("/house/memos/1/approve", headers=HX).status_code == 404
+        assert off.get("/house/memos/1/audio").status_code == 404
+
+
+def test_the_memo_audio_route_serves_only_pending_or_approved_files(ui, settings):
+    sam = add_member(ui, "Sam")
+    pending = memo_with_audio(ui, settings, sam)
+    approved = memo_with_audio(ui, settings, sam, status="approved")
+    rejected = memo_with_audio(ui, settings, sam, status="rejected")
+    for memo in (pending, approved):
+        r = ui.get(f"/house/memos/{memo}/audio")
+        assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and r.content[:4] == b"RIFF"
+        assert r.headers["cache-control"] == "no-store"
+    assert ui.get(f"/house/memos/{rejected}/audio").status_code == 404
+    assert ui.get("/house/memos/999/audio").status_code == 404
+    assert ui.get("/house/memos/abc/audio").status_code == 422
+    house.memo_path(settings.house_dir, pending).unlink()
+    assert ui.get(f"/house/memos/{pending}/audio").status_code == 404           # a missing file is a 404, not a 500
+    conn_of(ui).execute("UPDATE house_memos SET status = 'played', played_on = '2026-09-24' WHERE id = ?", (approved,))
+    assert ui.get(f"/house/memos/{approved}/audio").status_code == 404
+
+
+def test_the_memo_audio_route_is_behind_the_login_and_off_funnel(settings):
+    with make_client(settings, house_brief=True, ui_password="pw") as c:
+        assert c.get("/house/memos/1/audio", follow_redirects=False).status_code == 303
+    with make_client(settings, house_brief=True) as c:
+        assert c.get("/house/memos/1/audio", headers={"Tailscale-Funnel-Request": "?1"}).status_code == 404
+
+
+def test_an_approved_memo_is_spoken_in_the_next_episode(ui, settings):
+    sam = add_member(ui, "Sam")
+    memo = memo_with_audio(ui, settings, sam, status="approved")
+    assert house_render.generate(settings, synthesize=speech.fake_synthesize, now=lambda: NOW,
+                                 sleep=lambda s: None) == "ready"
+    episode = house.get_episode(conn_of(ui), TODAY)
+    assert "Voice note from Sam" in episode["script_json"] and house.get_memo(conn_of(ui), memo)["status"] == "played"
+
+
+def test_the_remove_confirmation_says_what_is_deleted(ui):
+    add_member(ui, "Sam")
+    html = ui.get("/").text
+    assert ("Remove Sam? Their link stops working at once, and their unread notes and unapproved voice notes "
+            "are deleted.") in html
