@@ -91,6 +91,9 @@ class Settings:
     house_memo_max_s: int = 60
     house_upload_max_mb: int = 10
     house_pending_memos: int = 10
+    events: bool = False
+    events_path: Path = PROJECT_DIR / "events.yaml"
+    events_max: int = 5
 
     @property
     def db_path(self) -> Path:
@@ -230,4 +233,7 @@ class Settings:
             house_memo_max_s=_int_in_range(env, "HOUSE_MEMO_MAX_S", 60, 5, 600),
             house_upload_max_mb=_int_in_range(env, "HOUSE_UPLOAD_MAX_MB", 10, 1, 50),
             house_pending_memos=_int_in_range(env, "HOUSE_PENDING_MEMOS", 10, 1, 100),
+            events=env.get("EVENTS", "0") == "1",
+            events_path=Path(env.get("EVENTS_PATH", PROJECT_DIR / "events.yaml")),
+            events_max=_int_in_range(env, "EVENTS_MAX", 5, 1, 10),
         )

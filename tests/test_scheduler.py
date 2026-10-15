@@ -239,3 +239,12 @@ def test_prune_job_also_prunes_the_house(conn, settings):
                            chapters=None, now=NOW)
     scheduler.prune_job(conn, settings, lambda: NOW)
     assert len(house.list_episodes(conn)) == 14
+
+
+def test_prune_job_forgets_old_event_mentions(conn, settings):
+    from morning_brief import events
+
+    events.record(conn, [{"title": "Old", "date": "2026-08-01"}, {"title": "New", "date": "2026-09-30"}],
+                  datetime(2026, 8, 1).date())
+    scheduler.prune_job(conn, settings, lambda: NOW)
+    assert [r["title"] for r in conn.execute("SELECT title FROM event_mentions")] == ["New"]

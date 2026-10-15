@@ -1,5 +1,6 @@
+import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -184,3 +185,86 @@ def test_after_the_grace_period_a_missed_brief_stays_missed(settings, published)
                         headers=AUTH).status_code == 404
         assert api.post("/api/daily/claim", headers=AUTH).status_code == 204
         assert published == []
+
+
+@pytest.fixture
+def events_api(settings, published, tmp_path):
+    path = tmp_path / "events.yaml"
+    path.write_text("sources:\n  - name: First Avenue\n    url: https://first-avenue.com/shows/\n")
+    s = replace(settings, worker_token=WTOKEN, daily_mode="worker", events=True, events_path=path)
+    app = create_app(s, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False,
+                     start_daily_publish=published.append)
+    with TestClient(app) as c:
+        yield c
+
+
+def good_pick(**kw):
+    return {**{"title": "Open Mic", "date": "2026-09-25", "time": "20:00", "venue": "Bryant-Lake Bowl",
+               "source_id": "e1"}, **kw}
+
+
+def test_claim_has_no_events_block_when_the_feature_is_off(api):
+    gathered(api.app.state.conn, api.app.state.settings)
+    assert api.post("/api/daily/claim", headers=AUTH).json()["events"] is None
+
+
+def test_events_flow(events_api, published):
+    conn = events_api.app.state.conn
+    day = gathered(conn, events_api.app.state.settings)
+    claimed = events_api.post("/api/daily/claim", headers=AUTH).json()
+    assert claimed["events"]["window"] == {"from": "2026-09-25", "to": "2026-10-02"}
+    assert claimed["events"]["sources"][0] == {"id": "e1", "name": "First Avenue",
+                                               "url": "https://first-avenue.com/shows/"}
+    ids = [item_id(COUNCIL)]
+    bad = events_api.post(f"/api/daily/{day}/script", json={**script_for(ids), "events": [good_pick(date="2027-01-01")]},
+                          headers=AUTH)
+    assert bad.status_code == 422 and any("outside" in p for p in bad.json()["problems"])
+    ok = events_api.post(f"/api/daily/{day}/script", json={**script_for(ids), "events": [good_pick()]}, headers=AUTH)
+    assert ok.status_code == 202 and published == [day]
+    stored = json.loads(daily_worker.get_job(conn, day)["script_json"])
+    assert stored["segments"][-1]["segment"] == "events" and stored["events"][0]["title"] == "Open Mic"
+
+
+def test_events_without_a_block_are_a_422_not_a_500(api):
+    conn = api.app.state.conn
+    day = gathered(conn, api.app.state.settings)
+    api.post("/api/daily/claim", headers=AUTH)
+    r = api.post(f"/api/daily/{day}/script", json={**script_for([item_id(COUNCIL)]), "events": [good_pick()]},
+                 headers=AUTH)
+    assert r.status_code == 422 and any("no events block" in p for p in r.json()["problems"])
+
+
+@pytest.mark.parametrize("junk", ["x", 5, {"a": 1}, [None], [[1]], [{"title": [1]}], [{"date": {}}], True, "\x00"])
+def test_garbage_events_are_a_422_not_a_500(events_api, junk):
+    conn = events_api.app.state.conn
+    day = gathered(conn, events_api.app.state.settings)
+    events_api.post("/api/daily/claim", headers=AUTH)
+    r = events_api.post(f"/api/daily/{day}/script", json={**script_for([item_id(COUNCIL)]), "events": junk},
+                        headers=AUTH)
+    assert r.status_code == 422 and r.json()["problems"]
+    assert not any("no events block" in p for p in r.json()["problems"])
+
+
+def test_a_broken_sources_file_does_not_stop_the_claim(settings, published, tmp_path):
+    s = replace(settings, worker_token=WTOKEN, daily_mode="worker", events=True,
+                events_path=tmp_path / "missing.yaml")
+    app = create_app(s, clock=lambda: NOW, start_run=lambda t: True, start_scheduler=False,
+                     start_daily_publish=published.append)
+    with TestClient(app) as c:
+        gathered(c.app.state.conn, c.app.state.settings)
+        r = c.post("/api/daily/claim", headers=AUTH)
+        assert r.status_code == 200 and r.json()["events"] is None
+
+
+def test_the_events_window_starts_on_the_local_day_not_the_utc_day(settings, published, tmp_path):
+    late = datetime(2026, 9, 26, 4, 30, tzinfo=timezone.utc)  # 23:30 on Sep 25 in Chicago
+    path = tmp_path / "events.yaml"
+    path.write_text("sources:\n  - name: First Avenue\n    url: https://first-avenue.com/shows/\n")
+    s = replace(settings, worker_token=WTOKEN, daily_mode="worker", events=True, events_path=path)
+    app = create_app(s, clock=lambda: late, start_run=lambda t: True, start_scheduler=False,
+                     start_daily_publish=published.append)
+    with TestClient(app) as c:
+        gathered(c.app.state.conn, c.app.state.settings, now=NOW)   # the job for 2026-09-25
+        body = c.post("/api/daily/claim", headers=AUTH).json()
+        assert body["date"] == "2026-09-25"
+        assert body["events"]["window"] == {"from": "2026-09-25", "to": "2026-10-02"}
