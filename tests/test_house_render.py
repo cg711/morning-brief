@@ -106,6 +106,7 @@ def test_a_missing_or_corrupt_memo_is_skipped_and_the_rest_still_publishes(conn,
     assert result == "ready" and pushes.calls == []
     statuses = dict(conn.execute("SELECT id, status FROM house_memos").fetchall())
     assert statuses == {bad: "rejected", missing: "rejected"}
+    assert not house.memo_path(settings.house_dir, bad).exists()      # the unusable file goes at once
     headings = [s["heading"] for s in json.loads(episode_row(conn)["script_json"])["sections"]]
     assert headings == ["Notes"]
 

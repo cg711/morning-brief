@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 import threading
+import time as time_module
 from datetime import datetime, time
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import daily_worker, db, deepdives, events, house, house_render, notes, notify as notify_mod, pipeline, retention
+from . import daily_worker, db, deepdives, events, house, house_audio, house_render, notes, notify as notify_mod, pipeline, retention
 from .config import Settings, TZ
 
 log = logging.getLogger(__name__)
@@ -82,6 +83,10 @@ def prune_job(conn, settings: Settings, clock) -> None:
     log.info("notes housekeeping: %s", notes.housekeeping(conn, now.astimezone(TZ).date()))
     log.info("house housekeeping: %s", house.prune(conn, settings.house_dir, now.astimezone(TZ).date()))
     log.info("events housekeeping: %s", events.prune(conn, now.astimezone(TZ).date()))
+    try:
+        log.info("house uploads swept: %s", house_audio.sweep(settings.house_dir / "incoming", time_module.time()))
+    except Exception:
+        log.exception("house uploads sweep failed")
 
 
 def long_running_job(conn, settings: Settings, clock, notify) -> int:

@@ -14,14 +14,15 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, house_render, house_routes, inbox_routes, notes_routes, notify, pipeline, podcast, retention, scheduler, share_routes
+from . import house_limits as house_limits_module
+from . import auth, daily_routes, daily_worker, db, deepdive_render, deepdive_routes, house_public, house_render, house_routes, inbox_routes, notes_routes, notify, pipeline, podcast, retention, scheduler, share_routes
 from .config import PRICES, TZ, Settings
 
 PKG = Path(__file__).resolve().parent
 COVER = PKG / "static" / "cover.png"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FUNNEL_HEADER = "tailscale-funnel-request"
-PUBLIC_PREFIXES = ("/s/",)
+PUBLIC_PREFIXES = ("/s/", "/h/")
 FEED_PREFIXES = ("/feed/", "/audio/")
 LONG_MINUTES = 30
 STAGE_LABELS = {"starting": "Starting", "fetching": "Gathering stories", "waiting": "Waiting for your Mac",
@@ -54,7 +55,7 @@ def _local(iso: str) -> str:
 
 def create_app(settings: Settings | None = None, *, clock=None, start_run=None, start_render=None,
                 start_scheduler=True, notifier=None, start_daily_publish=None,
-                start_house=None) -> FastAPI:
+                start_house=None, house_limits=None) -> FastAPI:
     _configure_logging()
     settings = settings or Settings.from_env()
     clock = clock or (lambda: datetime.now(timezone.utc))
@@ -69,6 +70,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     start_render = start_render or (lambda topic_id: deepdive_render.start(settings, topic_id, notify=notifier))
     start_daily_publish = start_daily_publish or (lambda d: daily_worker.start_publish(settings, d))
     start_house = start_house or (lambda: house_render.start(settings, notify=notifier))
+    limits = house_limits or house_limits_module.HouseLimits()
     settings.deep_dives_dir.mkdir(parents=True, exist_ok=True)
 
     @asynccontextmanager
@@ -87,6 +89,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     app.state.conn, app.state.settings, app.state.clock, app.state.start_run = conn, settings, clock, start_run
     app.state.start_render = start_render
     app.state.notifier = notifier
+    app.state.house_limits = limits
     app.mount("/static", StaticFiles(directory=PKG / "static"), name="static")
 
     secret = auth.load_secret(settings.data_dir) if settings.login_enabled else b""
@@ -190,6 +193,10 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
         settings=settings, conn=conn, templates=templates, clock=clock, check_hx_request=check_hx_request,
         check_token=check_token, start_house=start_house)
     app.include_router(house_router)
+    house_public_router = house_public.make_router(settings=settings, conn=conn, templates=templates, clock=clock,
+                                                   limits=limits)
+    house_public.add_catch_alls(house_public_router)
+    app.include_router(house_public_router)
 
     app.include_router(daily_routes.make_router(
         settings=settings, conn=conn, clock=clock, check_worker=dd_router.check_worker,

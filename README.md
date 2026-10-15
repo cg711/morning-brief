@@ -143,7 +143,24 @@ A second, shared podcast for a household. Set `HOUSE_BRIEF=1` and a **House** ca
 
 Each morning at `HOUSE_AT` the server writes the script itself from sentence templates, so it needs no Mac and no Claude usage, and speaks it with the same engine as your other episodes (in the co-host voice by default). **A day with nothing due makes no episode.** A failed run sends a push and retries 30 minutes later. The card shows what the next brief would say, and **Generate now** makes one on demand.
 
-The episode has its own podcast feed, `…/feed/house/<FEED_TOKEN>.xml`, served the same way as your other feeds (tailnet only). If you turn on `FUNNEL_FEEDS`, the House feed is reachable publicly like your other feeds (the token is still required); leave it off to keep the House feed tailnet-only. Letting housemates listen and add items themselves comes in a later release.
+The episode has its own podcast feed, `…/feed/house/<FEED_TOKEN>.xml`, served the same way as your other feeds (tailnet only). If you turn on `FUNNEL_FEEDS`, the House feed is reachable publicly like your other feeds (the token is still required); leave it off to keep the House feed tailnet-only. Housemates get their own links; see below.
+
+### Letting housemates in
+
+Each housemate you add gets a personal secret link, `…/h/<token>`, with a page and a podcast feed of their own. They can listen to the House episodes, add notes and to-dos, claim and tick things off (chores, prep items, to-dos), and send a **voice note**: record it on the page or upload a file from Voice Memos. Voice notes wait for your approval; approve (or reject) them in the House card, where you can play each one first. Approved ones play in the next episode, for the whole house.
+
+Setup:
+1. Rebuild the image (`docker compose up -d --build`); it now includes `ffmpeg`, which decodes uploads in a separate, resource-limited process. If you don't want uploads, nothing else changes, and the page says voice notes are unavailable when `ffmpeg` is missing.
+2. Expose the housemate path with Tailscale Funnel, next to the share path (use the same flags you used for `/s/`):
+
+   ```bash
+   sudo tailscale funnel --bg --set-path /h/ http://127.0.0.1:8430/h/
+   ```
+
+   The `/h/` Funnel path is public to anyone who has a link, so treat links like passwords and remove a housemate to revoke theirs at once. Removing a housemate also deletes their unread notes and unapproved voice notes.
+3. Set `SHARE_BASE_URL` (the same https Funnel address used for share links). The House card then shows each housemate's link and feed with Copy buttons. Revoke a link by removing the housemate.
+
+What a leaked link allows: reading the House page, adding notes and to-dos (capped, rate-limited and deletable by you), and uploading voice notes that can't play until you approve them. Nothing from the personal brief, Oura or the calendar is reachable from these pages, and every other path still answers 404 to Funnel traffic. Tuning: `HOUSE_MEMO_MAX_S` (longest voice note, default 60), `HOUSE_UPLOAD_MAX_MB` (default 10), `HOUSE_PENDING_MEMOS` (unapproved notes per housemate, default 10).
 
 ## Login and sharing (optional)
 
@@ -169,7 +186,7 @@ What to expect:
 - Shared episodes are never auto-deleted.
 - Daily briefs can't be shared.
 - Share pages ask search engines not to index them.
-- The app refuses every non-`/s/` path for Funnel traffic, even if Funnel is set up more broadly.
+- The app refuses every path except `/s/` (and `/h/` when housemates are set up) for Funnel traffic, even if Funnel is set up more broadly.
 - Unsetting `SHARE_BASE_URL` hides the Share button but doesn't kill existing links; revoke them first, or remove the Funnel mapping.
 
 ## Customizing

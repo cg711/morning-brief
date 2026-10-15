@@ -1,7 +1,6 @@
 """The owner's House card and the owner's House feed (tailnet only; the login and feed token protect them)."""
 from __future__ import annotations
 
-import json
 import re
 from datetime import date
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Path as PathParam, Request, Response
 from fastapi.responses import FileResponse
 
-from . import db, house, house_facts, house_script, podcast
+from . import db, house, house_facts, house_feed, house_script, podcast
 from .config import TZ
 
 PKG = Path(__file__).resolve().parent
@@ -88,8 +87,17 @@ def make_router(*, settings, conn, templates, clock, check_hx_request, check_tok
         episodes = house.list_episodes(conn)
         last = {"date": episodes[0]["date"], "minutes": round(episodes[0]["duration_s"] / 60, 1)} if episodes else None
         problem = db.get_state(conn, "house_last_error") or ""
+        base = settings.share_base_url
+        members = []
+        for m in house.list_members(conn):
+            link = f"{base}/h/{m['token']}" if base else None
+            members.append({"id": m["id"], "name": m["name"], "link": link,
+                            "feed": f"{link}/feed.xml" if link else None})
+        pending = [{"id": m["id"], "who": names.get(m["member_id"], "a housemate"),
+                    "seconds": round(m["duration_s"])} for m in house.list_pending_memos(conn)]
         return {"enabled": settings.house_brief, "error": error, "notice": notice,
-                "members": [{"id": m["id"], "name": m["name"]} for m in house.list_members(conn)],
+                "members": members, "pending_memos": pending,
+                "approved_waiting": house.approved_waiting_count(conn), "sharing": bool(base),
                 "chores": chores, "events": events, "upkeep": upkeep, "todos": todos, "notes": notes,
                 "preview": preview, "preview_day": f"{next_day:%A} {short(next_day)}", "last": last,
                 "last_error": problem.split("|", 1)[1] if "|" in problem else "",
@@ -122,6 +130,28 @@ def make_router(*, settings, conn, templates, clock, check_hx_request, check_tok
         guard(request)
         house.revoke_member(conn, member_id, clock())
         return render(request)
+
+    # --- voice notes waiting ---
+    @router.post("/house/memos/{memo_id}/approve")
+    def approve_memo(memo_id: Id, request: Request):
+        guard(request)
+        house.approve_memo(conn, memo_id, clock())
+        return render(request)
+
+    @router.post("/house/memos/{memo_id}/reject")
+    def reject_memo(memo_id: Id, request: Request):
+        guard(request)
+        house.reject_memo(conn, memo_id, settings.house_dir)
+        return render(request)
+
+    @router.get("/house/memos/{memo_id}/audio")
+    def memo_audio(memo_id: Id):
+        on()
+        memo = house.get_memo(conn, memo_id)
+        path = house.memo_path(settings.house_dir, memo_id)
+        if memo is None or memo["status"] not in ("pending", "approved") or memo["played_on"] or not path.is_file():
+            raise HTTPException(404)
+        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     # --- chores ---
     @router.post("/house/chores")
@@ -255,12 +285,7 @@ def make_router(*, settings, conn, templates, clock, check_hx_request, check_tok
     def feed(token: str):
         on()
         check_token(token)
-        episodes = []
-        for row in house.list_episodes(conn):
-            script = json.loads(row["script_json"])
-            episodes.append({"date": row["date"], "title": script["title"], "created_at": row["created_at"],
-                             "updated_at": row["updated_at"], "audio_bytes": row["audio_bytes"],
-                             "duration_s": row["duration_s"], "description": house_script.describe(script)})
+        episodes = house_feed.episodes(conn)
         base = settings.public_base_url
         xml = podcast.build_house_feed(
             episodes, base, lambda ep: f"{base}/audio/{settings.feed_token}/house/{ep['date']}.mp3",

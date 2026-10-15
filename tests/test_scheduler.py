@@ -248,3 +248,34 @@ def test_prune_job_forgets_old_event_mentions(conn, settings):
                   datetime(2026, 8, 1).date())
     scheduler.prune_job(conn, settings, lambda: NOW)
     assert [r["title"] for r in conn.execute("SELECT title FROM event_mentions")] == ["New"]
+
+
+def test_prune_job_sweeps_stale_incoming_uploads(conn, settings):
+    import os
+    import time
+
+    incoming = settings.house_dir / "incoming"
+    incoming.mkdir(parents=True)
+    old = incoming / "old.upload"
+    old.write_bytes(b"x")
+    os.utime(old, (time.time() - 7200, time.time() - 7200))
+    scheduler.prune_job(conn, settings, lambda: datetime.fromtimestamp(time.time(), tz=NOW.tzinfo))
+    assert not old.exists()
+
+
+def test_a_failing_incoming_sweep_does_not_abort_the_prune_job(conn, settings, monkeypatch, caplog):
+    from morning_brief import events, house
+
+    calls = []
+    for module in (house, events):
+        original = module.prune
+        monkeypatch.setattr(module, "prune", lambda *a, _o=original, _n=module.__name__, **k: calls.append(_n) or _o(*a, **k))
+
+    def boom(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(scheduler.house_audio, "sweep", boom)
+    with caplog.at_level("ERROR"):
+        scheduler.prune_job(conn, settings, lambda: NOW)
+    assert calls == ["morning_brief.house", "morning_brief.events"]
+    assert "house uploads sweep failed" in caplog.text

@@ -79,4 +79,4 @@ def test_failure_limiter_window():
 
 
 def test_open_prefixes():
-    assert set(auth.OPEN_PREFIXES) == {"/static/", "/s/", "/feed/", "/audio/", "/api/"}
+    assert set(auth.OPEN_PREFIXES) == {"/static/", "/s/", "/h/", "/feed/", "/audio/", "/api/"}
