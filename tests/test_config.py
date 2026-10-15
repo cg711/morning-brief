@@ -207,3 +207,22 @@ def test_house_at_must_be_a_time(value):
         return
     with pytest.raises(ConfigError, match="HOUSE_AT"):
         Settings.from_env({"FEED_TOKEN": "x" * 32, "HOUSE_AT": value})
+
+
+def test_events_defaults():
+    from morning_brief.config import PROJECT_DIR
+
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32})
+    assert s.events is False and s.events_max == 5 and s.events_path == PROJECT_DIR / "events.yaml"
+
+
+def test_events_settings_are_read(tmp_path):
+    s = Settings.from_env({"FEED_TOKEN": "x" * 32, "EVENTS": "1", "EVENTS_PATH": str(tmp_path / "e.yaml"),
+                           "EVENTS_MAX": "8"})
+    assert s.events is True and s.events_max == 8 and s.events_path == tmp_path / "e.yaml"
+
+
+@pytest.mark.parametrize("value", ["0", "11", "abc", "-1", "2.5"])
+def test_events_max_bounds(value):
+    with pytest.raises(ConfigError, match="EVENTS_MAX"):
+        Settings.from_env({"FEED_TOKEN": "x" * 32, "EVENTS_MAX": value})

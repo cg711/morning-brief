@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import daily_worker
+from . import daily_worker, events
+from .config import TZ
 
 
 def make_router(*, settings, conn, clock, check_worker, start_publish) -> APIRouter:
@@ -15,7 +17,9 @@ def make_router(*, settings, conn, clock, check_worker, start_publish) -> APIRou
     @router.post("/api/daily/claim")
     def claim(request: Request):
         check_worker(request)
-        job = daily_worker.claim(conn, clock(), settings.listener_location)
+        now = clock()
+        block = events.claim_block(settings, conn, now.astimezone(TZ).date())
+        job = daily_worker.claim(conn, now, settings.listener_location, events_block=block)
         if job is None:
             return Response(status_code=204)
         # indented so the file has short lines the worker's Read tool can page through
@@ -40,12 +44,14 @@ def make_router(*, settings, conn, clock, check_worker, start_publish) -> APIRou
         except ValueError:
             return JSONResponse({"problems": ["the body must be valid JSON"]}, status_code=422)
         facts = json.loads(job["personal_json"]) if job["personal_json"] else None
+        block = events.claim_block(settings, conn, date.fromisoformat(episode_date))
         problems = daily_worker.validate_submission(script, daily_worker.known_ids(job),
                                                     personal_allowed=bool(facts and set(facts) - {"notes"}),
-                                                    notes_allowed=bool(facts and facts.get("notes")))
+                                                    notes_allowed=bool(facts and facts.get("notes")),
+                                                    events_block=block)
         if problems:
             return JSONResponse({"problems": problems}, status_code=422)
-        if not daily_worker.accept(conn, episode_date, script, clock()):
+        if not daily_worker.accept(conn, episode_date, script, clock(), events_block=block):
             raise HTTPException(404)
         start_publish(episode_date)
         return {"status": "speaking"}

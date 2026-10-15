@@ -34,3 +34,12 @@ def test_daily_template_documents_contract():
     assert not re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", text)
     assert "python3 -c \"import json; s=json.load(open('{{CACHE_DIR}}/script-daily-<date>.json'))" in text
     assert "20 to 100" not in text
+
+
+def test_daily_template_documents_events():
+    text = DAILY.read_text()
+    for needle in ('"events"', "Around town", "at most six", "YYYY-MM-DD", "HH:MM", '"source_id"', '"mentioned"',
+                   "not write any prose for events", "only what the page states", "top-level `events`",
+                   "about events"):
+        assert needle in text, needle
+    assert "/Users/" not in text and "/home/" not in text

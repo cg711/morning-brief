@@ -26,7 +26,7 @@ curl -s -o {{CACHE_DIR}}/daily-claim.json -w '%{http_code}' --connect-timeout 10
 
 - `204`: nothing to do. Reply `No daily brief to write.` and stop. Use no other tools.
 - `000` or a connection error: reply `server unreachable.` and stop.
-- `200`: read `{{CACHE_DIR}}/daily-claim.json`: `{"date": "…", "today": "Monday, September 28, 2026", "location": "…", "now": "…", "previous_headlines": [...], "target_words": 550, "personal": {"weather": {...}, "calendar": {...}, "countdowns": [{"label", "days"}], "sleep": {...}, "tip": {...}, "spending": {...}, "notes": [{"text", "url"}]} or null, "candidates": [{"id", "segment", "source", "published", "text": "feed|page|summary", "title", "summary", "url"}]}`. Below, `<date>` is that `date`.
+- `200`: read `{{CACHE_DIR}}/daily-claim.json`: `{"date": "…", "today": "Monday, September 28, 2026", "location": "…", "now": "…", "previous_headlines": [...], "target_words": 550, "personal": {"weather": {...}, "calendar": {...}, "countdowns": [{"label", "days"}], "sleep": {...}, "tip": {...}, "spending": {...}, "notes": [{"text", "url"}]} or null, "events": {"window": {"from", "to"}, "max": 5, "sources": [{"id", "name", "url"}], "mentioned": [{"title", "date"}]} or null, "candidates": [{"id", "segment", "source", "published", "text": "feed|page|summary", "title", "summary", "url"}]}`. Below, `<date>` is that `date`.
 - Anything else: reply with the code and stop.
 
 ## 2. Pick the stories
@@ -70,6 +70,15 @@ Write one more segment right after "Your morning" (or first if you didn't write 
 - For a note with a `url`, read the page with the web fetch tool and add two or three sentences on what it says. If it can't be read, say only the note (or the site's name when the note has no text).
 - Don't add opinions, advice or tasks that aren't in the note.
 
+## Around town (only when `events` isn't null)
+
+The claim's `events` block lists pages to read and the window of dates to cover. When it isn't null, add a top-level `events` list to the script JSON (next to `intro`, `segments` and `outro`). Do not write any prose for events and do not add an events segment: the server writes the sentences.
+- Read at most six of the `sources` pages with the web fetch tool. Skip a page that can't be read.
+- Pick up to `max` events that start on a date from `window.from` to `window.to`: a mix of live music and shows, food and drink, arts and film and comedy, and community, sports and outdoors, favoring Uptown and Lake Street. Prefer events that are not in `mentioned`; an event in `mentioned` may be picked only if it is today or tomorrow.
+- Use only what the page states. Skip an event whose date or start time you can't read, and never guess a venue.
+- Each pick is `{"title": "…", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "…", "source_id": "<the source's id>"}`. `time` (24-hour) and `venue` are optional: leave a key out when the page doesn't say. A title is at most 120 characters and a venue at most 80.
+- If nothing is worth mentioning, use `"events": []` or leave the key out.
+
 ## 4. Write the script
 
 The news (everything except the personal and notes segments) is 450 to 650 words, read aloud by a text-to-speech voice.
@@ -87,11 +96,14 @@ Save it as JSON to `{{CACHE_DIR}}/script-daily-<date>.json` in exactly this shap
 {
   "intro": "…",
   "segments": [{"segment": "headlines", "headline": "…", "text": "…", "item_ids": ["<candidate id>"]}],
-  "outro": "…"
+  "outro": "…",
+  "events": [{"title": "…", "date": "YYYY-MM-DD", "time": "HH:MM", "venue": "…", "source_id": "e1"}]
 }
 ```
 
-Rules the server enforces: 300 to 750 words in total; 1 to 8 segments; `segment` is one of headlines, tech, business, local; every segment has a non-empty `headline` (headlines at most 200 characters) and `text` and cites at least one candidate id from the claim; no control characters; an optional first "personal" segment (only when the claim had personal data) of 20 to 160 words that cites no ids, and it doesn't count toward the 300 to 750. An optional "notes" segment (only when the claim had notes) comes right after it, or first, is 20 to 400 words, cites no ids, and doesn't count either.
+Leave out the `"events"` key when the claim's `events` is null.
+
+Rules the server enforces: 300 to 750 words in total; 1 to 8 segments; `segment` is one of headlines, tech, business, local; every segment has a non-empty `headline` (headlines at most 200 characters) and `text` and cites at least one candidate id from the claim; no control characters; an optional first "personal" segment (only when the claim had personal data) of 20 to 160 words that cites no ids, and it doesn't count toward the 300 to 750. An optional "notes" segment (only when the claim had notes) comes right after it, or first, is 20 to 400 words, cites no ids, and doesn't count either. Every pick in "events" needs a valid title, a date inside the claim's window and a source_id from the claim; a title already in "mentioned" is refused unless the event is today or tomorrow; there is no events segment to write.
 
 Count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-daily-<date>.json')); print(sum(len(t.split()) for t in [s['intro'], *[x['text'] for x in s['segments']], s['outro']]))"`.
 
@@ -104,7 +116,7 @@ curl -s -o {{CACHE_DIR}}/daily-submit.json -w '%{http_code}' --connect-timeout 1
 ```
 
 - `202`: reply `Submitted daily brief <date> (<N> words, <M> stories).` and stop.
-- `422`: read `{{CACHE_DIR}}/daily-submit.json` (`{"problems": [...]}`), fix exactly those problems and resubmit **once**. If it fails again, report the problems with the fail command below. If the only remaining problems are about the personal segment, remove it and resubmit instead of failing.
+- `422`: read `{{CACHE_DIR}}/daily-submit.json` (`{"problems": [...]}`), fix exactly those problems and resubmit **once**. If it fails again, report the problems with the fail command below. If the only remaining problems are about the personal segment or about events, remove that segment or the "events" list and resubmit instead of failing.
 - `404`: the job was replaced or already handled. Stop.
 - Any other status code: reply with it and stop.
 

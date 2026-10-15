@@ -1,11 +1,12 @@
 import json
 import threading
-from datetime import timedelta
+from dataclasses import replace
+from datetime import date as date_cls, timedelta
 
 import httpx
 import pytest
 
-from morning_brief import daily_worker, db, pipeline, speech
+from morning_brief import daily_worker, db, events, pipeline, speech
 from morning_brief.feeds import item_id
 from tests.helpers import NOW, seed_episode
 
@@ -479,3 +480,179 @@ def test_previous_headlines_leave_out_your_morning(conn, settings):
     conn.execute("UPDATE episodes SET script_json = ? WHERE date = '2026-09-24'", (json.dumps(script),))
     gathered(conn, settings)
     assert daily_worker.claim(conn, NOW, "Minneapolis")["previous_headlines"] == ["Story 0"]
+
+
+EVENTS_YAML = "sources:\n  - name: First Avenue\n    url: https://first-avenue.com/shows/\n"
+
+
+def events_settings(settings, tmp_path):
+    path = tmp_path / "events.yaml"
+    path.write_text(EVENTS_YAML)
+    return replace(settings, events=True, events_path=path)
+
+
+def events_script(ids, picks):
+    return {**script_for(ids), "events": picks}
+
+
+def tonight(**kw):
+    pick = {"title": "Open Mic", "date": "2026-09-25", "time": "20:00", "venue": "Bryant-Lake Bowl", "source_id": "e1"}
+    return {**pick, **kw}
+
+
+def test_claim_carries_the_events_block(conn, settings, tmp_path):
+    s = events_settings(settings, tmp_path)
+    gathered(conn, s)
+    block = events.claim_block(s, conn, date_cls(2026, 9, 25))
+    got = daily_worker.claim(conn, NOW, "Minneapolis", events_block=block)
+    assert got["events"] == block and got["events"]["window"] == {"from": "2026-09-25", "to": "2026-10-02"}
+
+
+def test_claim_without_a_block_says_null(conn, settings):
+    gathered(conn, settings)
+    assert daily_worker.claim(conn, NOW, "Minneapolis")["events"] is None
+
+
+def test_validate_submission_checks_events(conn, settings, tmp_path):
+    block = events.claim_block(events_settings(settings, tmp_path), conn, date_cls(2026, 9, 25))
+    known = {"a"}
+    assert daily_worker.validate_submission(events_script(["a"], [tonight()]), known, events_block=block) == []
+    assert daily_worker.validate_submission(script_for(["a"]), known, events_block=block) == []   # events are optional
+    assert any("no events block" in p for p in
+               daily_worker.validate_submission(events_script(["a"], [tonight()]), known, events_block=None))
+    bad = daily_worker.validate_submission(events_script(["a"], [tonight(date="2026-12-01")]), known,
+                                           events_block=block)
+    assert any("outside" in p for p in bad)
+
+
+@pytest.mark.parametrize("junk", ["a show", 5, {"a": 1}, [None], [[]], [{"title": {"a": 1}}], [5, "x"], True])
+def test_validate_submission_never_raises_on_garbage_events(conn, settings, tmp_path, junk):
+    block = events.claim_block(events_settings(settings, tmp_path), conn, date_cls(2026, 9, 25))
+    problems = daily_worker.validate_submission(events_script(["a"], junk), {"a"}, events_block=block)
+    assert problems
+
+
+def test_a_worker_written_events_segment_is_refused(conn, settings, tmp_path):
+    block = events.claim_block(events_settings(settings, tmp_path), conn, date_cls(2026, 9, 25))
+    script = script_for(["a"])
+    script["segments"].append({"segment": "events", "headline": "Around town", "text": "Stuff.", "item_ids": []})
+    problems = daily_worker.validate_submission(script, {"a"}, events_block=block)
+    assert any("top-level 'events' list" in p for p in problems)
+
+
+def test_accept_composes_the_events_segment_after_the_news(conn, settings, tmp_path):
+    s = events_settings(settings, tmp_path)
+    day = gathered(conn, s)
+    block = events.claim_block(s, conn, date_cls(2026, 9, 25))
+    daily_worker.claim(conn, NOW, "Minneapolis", events_block=block)
+    script = events_script([item_id(COUNCIL)], [tonight(title="  Open   Mic! ")])
+    assert daily_worker.accept(conn, day, script, NOW, events_block=block) is True
+    stored = json.loads(daily_worker.get_job(conn, day)["script_json"])
+    assert [seg["segment"] for seg in stored["segments"]] == ["headlines", "events"]
+    assert stored["segments"][-1] == {
+        "segment": "events", "headline": "Around town", "item_ids": [],
+        "text": ("Around town this week. Today at eight in the evening, Open Mic, at Bryant-Lake Bowl. "
+                 "Listings from First Avenue.")}
+    assert stored["events"] == [{"title": "Open Mic!", "date": "2026-09-25", "time": "20:00",
+                                 "venue": "Bryant-Lake Bowl", "source_id": "e1"}]
+
+
+def test_accept_ignores_events_when_there_was_no_block(conn, settings):
+    day = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    assert daily_worker.accept(conn, day, events_script([item_id(COUNCIL)], [tonight()]), NOW) is True
+    stored = json.loads(daily_worker.get_job(conn, day)["script_json"])
+    assert [seg["segment"] for seg in stored["segments"]] == ["headlines"] and "events" not in stored
+
+
+def test_accept_with_an_empty_events_list_adds_nothing(conn, settings, tmp_path):
+    s = events_settings(settings, tmp_path)
+    day = gathered(conn, s)
+    block = events.claim_block(s, conn, date_cls(2026, 9, 25))
+    daily_worker.claim(conn, NOW, "Minneapolis", events_block=block)
+    daily_worker.accept(conn, day, events_script([item_id(COUNCIL)], []), NOW, events_block=block)
+    stored = json.loads(daily_worker.get_job(conn, day)["script_json"])
+    assert [seg["segment"] for seg in stored["segments"]] == ["headlines"] and "events" not in stored
+
+
+def publish_with_events(conn, settings, tmp_path, synthesize=speech.fake_synthesize, picks=None):
+    s = events_settings(settings, tmp_path)
+    day = gathered(conn, s)
+    block = events.claim_block(s, conn, date_cls(2026, 9, 25))
+    daily_worker.claim(conn, NOW, "Minneapolis", events_block=block)
+    daily_worker.accept(conn, day, events_script([item_id(COUNCIL)], picks or [tonight()]), NOW, events_block=block)
+    return s, day, daily_worker.speak_and_publish(s, day, synthesize=synthesize, now=lambda: NOW)
+
+
+def test_the_events_are_spoken_after_the_news_and_before_the_outro(conn, settings, tmp_path):
+    spoken = []
+
+    def recording(passages, *args):
+        spoken.extend(passages)
+        return speech.fake_synthesize(passages, *args)
+
+    _, _, status = publish_with_events(conn, settings, tmp_path, synthesize=recording)
+    assert status == "ready"
+    assert spoken[-1] == "See you tomorrow." and spoken[-2].startswith("Around town this week. Today at eight")
+
+
+def test_mentions_are_recorded_only_after_a_successful_publish(conn, settings, tmp_path):
+    publish_with_events(conn, settings, tmp_path)
+    rows = conn.execute("SELECT title, date, mentioned_on FROM event_mentions").fetchall()
+    assert [tuple(r) for r in rows] == [("Open Mic", "2026-09-25", "2026-09-25")]
+
+
+def test_a_failed_publish_records_nothing(conn, settings, tmp_path):
+    def broken(*args):
+        raise RuntimeError("tts broke")
+
+    _, day, status = publish_with_events(conn, settings, tmp_path, synthesize=broken)
+    assert status != "ready"
+    assert conn.execute("SELECT COUNT(*) FROM event_mentions").fetchone()[0] == 0
+
+
+def test_a_repeat_is_refused_the_next_day_unless_it_is_today_or_tomorrow(conn, settings, tmp_path):
+    s, _, _ = publish_with_events(conn, settings, tmp_path, picks=[tonight(title="Late Show", date="2026-09-27"),
+                                                                    tonight(title="Far Show", date="2026-09-30")])
+    block = events.claim_block(s, conn, date_cls(2026, 9, 26))
+    assert block["mentioned"] == [{"title": "Late Show", "date": "2026-09-27"},
+                                  {"title": "Far Show", "date": "2026-09-30"}]
+    assert daily_worker.validate_submission(events_script(["a"], [tonight(title="Late Show", date="2026-09-27")]),
+                                            {"a"}, events_block=block) == []    # tomorrow: a reminder is fine
+    assert any("already mentioned" in p for p in daily_worker.validate_submission(
+        events_script(["a"], [tonight(title="Far Show", date="2026-09-30")]), {"a"}, events_block=block))
+    same_day = events.claim_block(s, conn, date_cls(2026, 9, 25))    # a regenerated brief may pick them again
+    assert same_day["mentioned"] == []
+
+
+def test_a_failing_mention_record_does_not_strand_a_published_job(conn, settings, tmp_path, monkeypatch, caplog):
+    def broken(*args):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(events, "record", broken)
+    _, day, status = publish_with_events(conn, settings, tmp_path)
+    assert status == "ready"
+    job = daily_worker.get_job(conn, day)
+    assert job["status"] == "done"
+    assert conn.execute("SELECT status FROM runs WHERE id = ?", (job["run_id"],)).fetchone()[0] == "succeeded"
+    assert "could not record event mentions" in caplog.text
+
+
+def test_previous_headlines_skip_every_extra_segment():
+    script = {"segments": [{"segment": "personal", "headline": "Your morning"},
+                           {"segment": "notes", "headline": "Your notes"},
+                           {"segment": "headlines", "headline": "Storm hits"},
+                           {"segment": "events", "headline": "Around town"}]}
+    assert daily_worker._news_headlines(json.dumps(script)) == ["Storm hits"]
+
+
+def test_downstream_consumers_tolerate_the_events_segment():
+    from morning_brief import podcast
+
+    script = {"intro": "Hi.", "outro": "Bye.", "segments": [
+        {"segment": "headlines", "headline": "Storm", "text": "Rain.", "item_ids": ["a"]},
+        {"segment": "events", "headline": "Around town", "text": "Around town this week.", "item_ids": []}]}
+    text = podcast.describe(script, [{"item_id": "a", "source": "NPR", "title": "T", "url": "https://x"}])
+    assert "Around town\nAround town this week." in text
+    assert speech.script_chapters(script, [0.0, 1.0, 2.0, 3.0]) == [
+        ("Introduction", 0.0), ("Storm", 1.0), ("Around town", 2.0), ("Wrap-up", 3.0)]

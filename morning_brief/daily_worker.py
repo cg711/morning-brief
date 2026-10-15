@@ -14,7 +14,7 @@ from typing import Callable
 
 import httpx
 
-from . import articles, db, feeds, notes, personal, pipeline, retention, speech, window, writer
+from . import articles, db, events, feeds, notes, personal, pipeline, retention, speech, window, writer
 from .config import TZ, Settings
 from .deepdives import _has_control_chars
 from .models import SEGMENTS
@@ -38,6 +38,12 @@ NOTES = "notes"
 NOTES_HEADLINE = "Your notes"
 NOTES_MIN_WORDS, NOTES_MAX_WORDS = 20, 400
 EXTRA_SEGMENTS = (PERSONAL, NOTES)
+NON_NEWS_SEGMENTS = (PERSONAL, NOTES, events.SEGMENT)  # never counted as news, never repeated as "yesterday's headlines"
+
+
+def _news_headlines(script_json: str) -> list[str]:
+    """Headlines of a stored script's news segments only."""
+    return [s["headline"] for s in json.loads(script_json)["segments"] if s.get("segment") not in NON_NEWS_SEGMENTS]
 _lock = threading.RLock()  # job transitions on the shared connection
 _gather_lock = threading.Lock()  # one gather at a time; independent of the Kokoro run_lock
 
@@ -98,8 +104,7 @@ def gather(settings: Settings, conn, http, now: datetime, trigger: str) -> str:
                        "published": writer._local(it.published_at), "published_at": it.published_at.isoformat(),
                        "text": _kind(it)} for it in chosen]
         bodies = {it.id: it.body for it in chosen if _kind(it) == "feed"}
-        headlines = [s["headline"] for s in json.loads(previous["script_json"])["segments"]
-                     if s.get("segment") not in EXTRA_SEGMENTS] if previous else []
+        headlines = _news_headlines(previous["script_json"]) if previous else []
         try:
             facts = personal.gather_personal(settings, http, now, conn=conn)
         except Exception:
@@ -181,7 +186,7 @@ def can_submit(job, now: datetime) -> bool:
     return job is not None and (job["status"] == "claimed" or _reopenable(job, now))
 
 
-def claim(conn, now: datetime, location: str) -> dict | None:
+def claim(conn, now: datetime, location: str, events_block: dict | None = None) -> dict | None:
     """Hand today's job to the worker if it is waiting, or claimed more than CLAIM_TTL ago."""
     episode_date = _local_date(now)
     with _lock:
@@ -212,6 +217,7 @@ def claim(conn, now: datetime, location: str) -> dict | None:
         "target_words": TARGET_WORDS,
         "candidates": [{k: c[k] for k in CLAIM_KEYS} for c in json.loads(job["candidates_json"])],
         "personal": _claim_personal(job),
+        "events": events_block,
     }
 
 
@@ -277,9 +283,9 @@ def _extra_problems(seg: dict, name: str, low: int, high: int) -> list[str]:
     return problems
 
 
-def validate_submission(script, known: set[str], *, personal_allowed: bool = False,
-                        notes_allowed: bool = False) -> list[str]:
-    """Optional 'personal' then 'notes' segments first (each only when the claim had that data), then the news
+def _validate_story_segments(script, known: set[str], *, personal_allowed: bool = False,
+                             notes_allowed: bool = False) -> list[str]:
+    """Story and extra segments: optional 'personal' then 'notes' segments first (each only when the claim had that data), then the news
     segments, which follow the API writer's rules. Personal and notes words don't count toward
     the news range."""
     if not isinstance(script, dict):
@@ -308,6 +314,20 @@ def validate_submission(script, known: set[str], *, personal_allowed: bool = Fal
     return problems + [p.replace("segment ", "news segment ", 1) for p in _validate_news(news, known)]
 
 
+def validate_submission(script, known: set[str], *, personal_allowed: bool = False, notes_allowed: bool = False,
+                        events_block: dict | None = None) -> list[str]:
+    """The story, personal and notes checks, plus the checks on the top-level 'events' list."""
+    problems = _validate_story_segments(script, known, personal_allowed=personal_allowed,
+                                        notes_allowed=notes_allowed)
+    if not isinstance(script, dict):
+        return problems
+    segments = script.get("segments")
+    if isinstance(segments, list) and any(isinstance(s, dict) and s.get("segment") == events.SEGMENT
+                                          for s in segments):
+        problems.append("don't write an 'events' segment; put the picks in the top-level 'events' list")
+    return problems + events.validate(script.get("events"), events_block)
+
+
 def _clean_segment(seg: dict) -> dict:
     if seg.get("segment") == PERSONAL:
         return {"segment": PERSONAL, "headline": PERSONAL_HEADLINE, "text": seg.get("text"), "item_ids": []}
@@ -326,17 +346,22 @@ def _clean_script(script: dict) -> dict:
     }
 
 
-def accept(conn, episode_date: str, script: dict, now: datetime) -> bool:
+def accept(conn, episode_date: str, script: dict, now: datetime, events_block: dict | None = None) -> bool:
     """claimed → speaking, storing the script. False if the job isn't claimed (any more). A job marked missed
     only because the worker was late may still be accepted during the grace period."""
     with _lock:
         job = get_job(conn, episode_date)
         if not can_submit(job, now):
             return False
+        cleaned = _clean_script(script)
+        picks = events.clean(script["events"]) if events_block and script.get("events") else []
+        if picks:
+            cleaned["segments"].append(events.segment(picks, events_block, date_cls.fromisoformat(episode_date)))
+            cleaned["events"] = picks
         cur = conn.execute(
             "UPDATE daily_jobs SET status = 'speaking', script_json = ?, updated_at = ? "
             "WHERE date = ? AND status IN ('claimed', 'missed')",
-            (json.dumps(_clean_script(script)), now.isoformat(), episode_date))
+            (json.dumps(cleaned), now.isoformat(), episode_date))
         if cur.rowcount == 0:
             return False
         if job["status"] == "missed":
@@ -379,6 +404,11 @@ def _publish_locked(settings: Settings, conn, episode_date: str, synthesize: Cal
         retention.prune(conn, settings.audio_dir, date_cls.fromisoformat(episode_date))
     except Exception:
         log.exception("daily %s: post-publish bookkeeping failed", episode_date)
+    if script.get("events"):
+        try:
+            events.record(conn, script["events"], date_cls.fromisoformat(episode_date))
+        except Exception:
+            log.exception("daily %s: could not record event mentions", episode_date)
     return "ready"
 
 

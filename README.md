@@ -128,6 +128,10 @@ The phone Shortcut can send notes too; see [shortcuts/README.md](shortcuts/READM
 
 Share a link or some text from any iPhone app to a **Morning Brief** Shortcut. It asks for an optional note and whether to put the topic at the top or the end of the queue, then adds a deep dive with your page defaults. Set `INBOX_TOKEN`, then follow [shortcuts/README.md](shortcuts/README.md). The endpoint is `POST /api/inbox`; like the rest of `/api/`, it's reachable only on your tailnet and never through Funnel.
 
+## Around town (optional)
+
+With `DAILY_BRIEF=worker` and `EVENTS=1`, each daily brief ends its news with a short "Around town" segment about events in the next seven days. The pages the worker reads are listed in `events.yaml` (add your favourite Uptown and Lake Street pages there); the worker reads at most six a day and returns its picks as data (title, date, time, venue, which page). The server checks them and writes the sentences itself, so nothing is embellished (the server can check dates, lengths and sources, but not whether a page said it), and it ends with "Listings from …" naming the pages. An event isn't repeated on later days unless it is today or tomorrow, and a day with nothing worth saying has no segment. It costs nothing beyond the worker run you already have. After turning it on, re-render the worker prompt (`scripts/render_worker_prompt.py`) and update the scheduled task with it.
+
 ## House brief (optional)
 
 A second, shared podcast for a household. Set `HOUSE_BRIEF=1` and a **House** card appears on the page, where you manage:
@@ -177,6 +181,7 @@ What to expect:
 | Speaking pace | `SPEED` in `morning_brief/speech.py` | Default 1.1× |
 | Intro/outro music | `data/music/intro.wav`, `outro.wav`; `MUSIC=0` | A generated sting by default. Your own PCM WAVs, up to 30 s, replace it |
 | News sources | `feeds.yaml` | Grouped by segment: `headlines`, `tech`, `business`, `local` |
+| Event pages | `events.yaml`, `EVENTS=1` | Pages the worker reads for "Around town"; `EVENTS_MAX` caps the picks |
 | Schedule and time zone | `RUN_AT`, `RETRY_AT`, `BRIEF_TZ` | Daily brief only |
 
 ## Development

@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY morning_brief morning_brief
 COPY migrations migrations
 COPY feeds.yaml .
+COPY events.yaml .
 RUN useradd --uid 1000 --no-create-home --home-dir /tmp app
 USER app
 EXPOSE 8000

@@ -1,0 +1,15 @@
+# Pages the daily-brief worker reads for the "Around town" segment (EVENTS=1). Edit this file to add or remove pages;
+# the worker reads at most six per day. Add Uptown and Lake Street pages you like.
+sources:
+  - name: Downtown Minneapolis Council
+    url: https://www.mplsdowntown.com/events/
+  - name: First Avenue
+    url: https://first-avenue.com/shows/
+  - name: Hennepin Arts
+    url: https://www.hennepinarts.org/events/
+  - name: Meet Minneapolis
+    url: https://www.minneapolis.org/events/
+  - name: Minneapolis Park Board
+    url: https://www.minneapolisparks.org/events/
+  - name: Walker Art Center
+    url: https://walkerart.org/calendar/
