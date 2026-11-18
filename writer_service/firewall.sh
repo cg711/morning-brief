@@ -21,8 +21,8 @@
 # add yourself:  sudo ALLOW_DNS="192.168.1.1" bash writer_service/firewall.sh
 set -Eeuo pipefail
 
-SUBNET="172.28.40.0/24"     # writer_net in docker-compose.yml
-APP_IP="172.28.40.10"       # the morning-brief container's fixed address on writer_net
+SUBNET="172.29.40.0/24"     # writer_net in docker-compose.yml
+APP_IP="172.29.40.10"       # the morning-brief container's fixed address on writer_net
 TAG="morning-brief-writer"
 ROLLBACK_S="${ROLLBACK_S:-300}"   # automatic revert unless confirmed
 PIDFILE="${PIDFILE:-/run/morning-brief-writer-firewall.pid}"

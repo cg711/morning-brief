@@ -46,8 +46,8 @@ def test_rules_are_in_the_required_order_and_tagged():
     # the subnet and the app address are the ones docker-compose.yml fixes
     subnet = COMPOSE["networks"]["writer_net"]["ipam"]["config"][0]["subnet"]
     app_ip = COMPOSE["services"]["morning-brief"]["networks"]["writer_net"]["ipv4_address"]
-    assert var("SUBNET") == subnet == "172.28.40.0/24"
-    assert var("APP_IP") == app_ip == "172.28.40.10"
+    assert var("SUBNET") == subnet == "172.29.40.0/24"
+    assert var("APP_IP") == app_ip == "172.29.40.10"
 
     # every rule goes through add(), which is the one place that appends the tag
     assert var("TAG") == "morning-brief-writer"
@@ -181,15 +181,15 @@ def test_apply_inserts_tagged_rules_in_order_above_foreign_ones(sandbox):
     n = len(sandbox.tagged("DOCKER-USER"))
     assert user[n:] == [FOREIGN_DOCKER_USER] and len(user) == n + 1       # ours on top, theirs untouched below
     joined = "\n".join(user)
-    positions = [joined.index(x) for x in ("-d 172.28.40.10 ", "-d 192.168.1.1 -p udp", "ESTABLISHED,RELATED",
+    positions = [joined.index(x) for x in ("-d 172.29.40.10 ", "-d 192.168.1.1 -p udp", "ESTABLISHED,RELATED",
                                           "-d 172.16.0.0/12", "-d 10.0.0.0/8", "-d 192.168.0.0/16",
                                           "-d 100.64.0.0/10", "-d 169.254.0.0/16")]
     assert positions == sorted(positions)
-    assert user[n - 1].startswith("-s 172.28.40.0/24 -j ACCEPT")
+    assert user[n - 1].startswith("-s 172.29.40.0/24 -j ACCEPT")
     assert "127.0.0.53" not in joined and "::1" not in joined              # loopback resolvers are not allowed
     assert "192.168.1.1" in result.stdout                                  # and the chosen resolvers are echoed
     inp = sandbox.rules("INPUT")
-    assert inp[-1] == FOREIGN_INPUT and inp[-2].startswith("-s 172.28.40.0/24 -j DROP")
+    assert inp[-1] == FOREIGN_INPUT and inp[-2].startswith("-s 172.29.40.0/24 -j DROP")
     assert "ESTABLISHED,RELATED" in inp[-3] and all("morning-brief-writer" in r for r in inp[:-1])
     assert sandbox.pidfile.exists()                                         # the revert timer is running
 
@@ -316,7 +316,7 @@ def test_check_isolation_all_expectations_met_exits_zero():
     code, text = run(ENV, **fns)
     assert code == 0 and "FAIL" not in text
     probed = {(h, p) for h, p, _ in calls}
-    assert {("1.1.1.1", 443), ("172.28.40.1", 22), ("172.28.40.1", 8430), ("100.64.1.2", 8430),
+    assert {("1.1.1.1", 443), ("172.29.40.1", 22), ("172.29.40.1", 8430), ("100.64.1.2", 8430),
             ("192.168.1.10", 80), ("other", 5432)} <= probed
     assert all(t <= 3 for _, _, t in calls)
 
@@ -328,7 +328,7 @@ def test_check_isolation_accepts_app_status_200_or_401_only():
 
 
 def test_check_isolation_fails_when_a_forbidden_target_is_reachable():
-    for target in [("172.28.40.1", 22), ("172.28.40.1", 8430), ("100.64.1.2", 8430), ("192.168.1.10", 80),
+    for target in [("172.29.40.1", 22), ("172.29.40.1", 8430), ("100.64.1.2", 8430), ("192.168.1.10", 80),
                    ("other", 5432)]:
         fns, _ = probes(open_tcp=GOOD | {target})
         code, text = run(ENV, **fns)
@@ -348,7 +348,7 @@ def test_check_isolation_skips_unset_probes_with_a_notice():
     assert code == 0
     for name in ("HOST_TAILNET_IP", "LAN_PROBE", "OTHER_CONTAINER_PROBE"):
         assert name in text and "SKIP" in text
-    assert {h for h, _, _ in calls} == {"1.1.1.1", "172.28.40.1"}
+    assert {h for h, _, _ in calls} == {"1.1.1.1", "172.29.40.1"}
 
 
 def test_check_isolation_treats_a_malformed_probe_as_a_failure():
@@ -360,7 +360,7 @@ def test_check_isolation_treats_a_malformed_probe_as_a_failure():
 def test_check_isolation_says_when_a_blocked_probe_was_refused_not_dropped():
     fns, _ = probes(open_tcp=GOOD)
     real = fns["tcp"]
-    fns["tcp"] = lambda h, p, t: "refused" if (h, p) == ("172.28.40.1", 22) else real(h, p, t)
+    fns["tcp"] = lambda h, p, t: "refused" if (h, p) == ("172.29.40.1", 22) else real(h, p, t)
     code, text = run(ENV, **fns)
     assert code == 0 and "refused: the packet reached the host" in text
 
@@ -418,7 +418,7 @@ def test_readme_tells_the_truth_about_env_reload_and_the_daily_runs_exposure():
     known = section.split("### Known limits", 1)[1]
     for needle in ("personal block", "arbitrary web pages", "same exposure", "public internet"):
         assert needle in known, needle
-    assert "172.28.40.0/24" in section and "SUBNET" in section and "APP_IP" in section
+    assert "172.29.40.0/24" in section and "SUBNET" in section and "APP_IP" in section
 
 
 def test_env_example_points_at_the_writer_env_example():

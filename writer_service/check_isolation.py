@@ -25,7 +25,7 @@ import urllib.request
 
 TIMEOUT_S = 3
 APP_URL = "http://morning-brief:8000/api/work"
-GATEWAY = "172.28.40.1"
+GATEWAY = "172.29.40.1"
 PUBLIC = ("1.1.1.1", 443)
 DNS_NAME = "example.com"
 

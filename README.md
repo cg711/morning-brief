@@ -90,7 +90,7 @@ Instead of a Mac scheduled task, a small container on the server can write the d
 
 One-time setup:
 
-0. **Check the writer's subnet is free.** The writer network uses `172.28.40.0/24`. If another Docker network already has it, the app fails to start (even without the writer profile), so look first: `docker network inspect $(docker network ls -q) | grep Subnet`. To use another subnet, change it in `docker-compose.yml` (the `writer_net` subnet and the `morning-brief` service's `ipv4_address` on it) and in the `SUBNET` and `APP_IP` variables at the top of `writer_service/firewall.sh`.
+0. **Check the writer's subnet is free.** The writer network uses `172.29.40.0/24`. If another Docker network already has it, the app fails to start (even without the writer profile), so look first: `docker network inspect $(docker network ls -q) | grep Subnet`. To use another subnet, change it in `docker-compose.yml` (the `writer_net` subnet and the `morning-brief` service's `ipv4_address` on it) and in the `SUBNET` and `APP_IP` variables at the top of `writer_service/firewall.sh`.
 1. **Create the token on the Mac.** Run `claude setup-token` in a terminal where you're signed in to Claude, and keep the output for the next step. You type it yourself; never paste it into a chat or a ticket.
 2. **Create `writer.env` on the server**, from `writer.env.example`, with mode 600, and put the token in it:
 
@@ -114,7 +114,7 @@ One-time setup:
    ```
 
    It allows the writer to reach the app and the public internet, and drops everything else private: the server itself, your LAN, other Docker networks and the tailnet (`172.16.0.0/12`, `10.0.0.0/8`, `192.168.0.0/16`, `100.64.0.0/10`). The rules come out again after 5 minutes unless you confirm with `sudo bash writer_service/firewall.sh confirm`, so a mistake can't lock you out. The script allows the host's own DNS resolvers (read from both `/run/systemd/resolve/resolv.conf` and `/etc/resolv.conf`) and prints which; add others with `sudo ALLOW_DNS="192.168.1.1" bash writer_service/firewall.sh`. The rules don't survive a reboot or a `ufw reload`: see "Known limits".
-5. **Check the isolation** (needs no sudo). First make sure the app's default route is not the writer network, since the firewall treats everything from that subnet as the writer: `docker compose exec morning-brief ip route` (or `cat /proc/net/route` if `ip` is missing) should show the default route via your normal Docker network, not `172.28.40.1`. Then, with the optional probes for a stronger check:
+5. **Check the isolation** (needs no sudo). First make sure the app's default route is not the writer network, since the firewall treats everything from that subnet as the writer: `docker compose exec morning-brief ip route` (or `cat /proc/net/route` if `ip` is missing) should show the default route via your normal Docker network, not `172.29.40.1`. Then, with the optional probes for a stronger check:
 
    ```bash
    docker compose --profile writer exec -e HOST_TAILNET_IP=100.x.y.z -e LAN_PROBE=192.168.x.y:80 \

@@ -57,13 +57,13 @@ def test_writer_has_an_init_process_and_a_pids_limit():
 def test_writer_is_alone_on_the_dedicated_network_with_a_fixed_subnet():
     assert WRITER["networks"] == ["writer_net"]
     net = COMPOSE["networks"]["writer_net"]
-    assert net["ipam"]["config"] == [{"subnet": "172.28.40.0/24"}]
+    assert net["ipam"]["config"] == [{"subnet": "172.29.40.0/24"}]
 
 
 def test_app_joins_writer_net_at_the_fixed_address_and_keeps_its_default_network():
     nets = APP["networks"]
     assert "default" in nets
-    assert nets["writer_net"] == {"ipv4_address": "172.28.40.10"}
+    assert nets["writer_net"] == {"ipv4_address": "172.29.40.10"}
     assert APP["ports"] and APP["volumes"] == ["./data:/srv/data"] and APP["env_file"] == ".env"
 
 
