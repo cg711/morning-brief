@@ -25,7 +25,8 @@ HOST = "morning-brief:8000"
 SERVER = f"http://{HOST}"
 ALLOW = rwp.writer_allow_rules(HOST, HOME, TEMPLATES)
 DENY = rwp.writer_deny_rules(HOST, HOME)
-BASH_ALLOW = [r[5:-1] for r in ALLOW if r.startswith("Bash(")]
+# rule text escapes ( and ) as \\( and \\) (Claude Code needs that); the commands themselves do not
+BASH_ALLOW = [r[5:-1].replace("\\(", "(").replace("\\)", ")") for r in ALLOW if r.startswith("Bash(")]
 BASH_DENY = [r[5:-1] for r in DENY if r.startswith("Bash(")]
 
 
@@ -137,7 +138,8 @@ def test_the_worker_token_header_file_is_not_readable_by_claude_itself():
     # no explicit allow, and the deny rules cover the whole .config dir (Claude's working directory is the cache dir,
     # see test_writer_loop, so implicit in-working-directory reads do not reach it either)
     assert not [r for r in ALLOW if r.startswith("Read(") and "worker-header" in r]
-    assert f"Read(/{HOME}/.config/**)" in DENY and f"Edit(/{HOME}/.config/**)" in DENY
+    # (no Read(.config/**) deny: the real CLI applies it to curl's `-H @file` too and blocks the allowed commands)
+    assert f"Read(/{HOME}/.config/**)" not in DENY and f"Edit(/{HOME}/.config/**)" in DENY
     assert f"Read(/{HOME}/settings.json)" in DENY and f"Edit(/{HOME}/settings.json)" in DENY
     # `permitted()` is False for anything no allow rule matches, so it cannot show that the deny rules work: assert that
     # a Bash deny rule itself matches each reader command on the absolute and the relative header path.
@@ -324,3 +326,12 @@ def test_dot_segments_and_encoded_separators_in_the_url_are_refused(label, writt
             assert not permitted(mutated), mutated
         assert not permitted(f"{command}/../../../x") and not permitted(f"{command}%2e%2e")
         assert permitted(command)    # and the legitimate command is neither denied nor unmatched
+
+
+def test_parentheses_inside_bash_allow_rules_are_escaped():
+    # Claude Code ends a rule at an unescaped ")" (verified against the real CLI: the word-count python commands never
+    # matched until they were escaped), so every ( and ) inside Bash(...) must be written \( and \)
+    import re as _re
+    for rule in (r for r in ALLOW if r.startswith("Bash(")):
+        body = rule[5:-1]
+        assert not _re.search(r"(?<!\\)[()]", body), rule

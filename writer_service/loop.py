@@ -102,6 +102,10 @@ def classify(returncode: int | None, stdout: str, stderr: str, timed_out: bool,
         if _LOGIN_TEXT.search((stderr or "")[-OUTPUT_CAP:]):
             return "auth", scrub((stderr or "").strip()[-DETAIL_MAX:], secrets)
         clean = scrub(stderr or "", secrets, limit=len(stderr or "") + 1)  # scrub it all, then take the tail
+        # a start-up crash prints a stack trace after the message: prefer the `error: ...` line over the tail
+        error_line = next((l.strip() for l in (stderr or "").splitlines() if l.lstrip().lower().startswith("error:")), "")
+        if error_line:
+            return "failed", scrub(error_line, secrets)
         return "failed", clean[-DETAIL_MAX:].strip() if clean else f"claude exited with status {returncode}"
     if not (stdout or "").strip():
         return "failed", "claude printed nothing"
@@ -158,10 +162,11 @@ def claude_command(kind: str, cfg: Config) -> list[str]:
 def child_env(cfg: Config, token_fd: int | None = None) -> dict:
     """The only environment Claude gets: no tokens at all (an injected agent could read them from /proc/self/environ),
     no API key, nothing inherited but PATH. The OAuth token travels in an inherited pipe whose descriptor number is
-    `token_fd` (run_claude creates the pipe and adds that variable). SUBPROCESS_ENV_SCRUB keeps credentials out of the
-    environments of the tools Claude itself starts."""
+    `token_fd` (run_claude creates the pipe and adds that variable). SUBPROCESS_ENV_SCRUB is explicitly 0: turning it on
+    makes Claude Code demand bubblewrap and crash at start-up without it, and it has nothing to scrub anyway because no
+    token is in this environment."""
     env = {"PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin", "HOME": cfg.home,
-           "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}
+           "DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0"}
     if token_fd is not None:
         env["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] = str(token_fd)
     return env

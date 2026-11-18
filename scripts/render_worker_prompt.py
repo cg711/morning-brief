@@ -77,7 +77,10 @@ def writer_allow_rules(host: str, home: Path, templates_dir: Path | None = None,
     cache = home / ".cache" / "morning-brief"
     rules = ["WebSearch", "WebFetch", f"Bash(mkdir -p {cache})"]
     for name in ("daily-brief-task.template.md", "deep-dive-task.template.md"):
-        rules += [f"Bash({shape})" for shape in command_shapes(templates_dir / name, f"{scheme}://{host}", home)]
+        # Claude Code reads an unescaped ( or ) inside Bash(...) as the end of the rule, so the word-count python commands
+        # never matched (verified against the real CLI): escape them as \\( and \\).
+        rules += [f"Bash({shape.replace('(', chr(92) + '(').replace(')', chr(92) + ')')})"
+                  for shape in command_shapes(templates_dir / name, f"{scheme}://{host}", home)]
     # No Read of the header file: only curl (through -H @file) needs it; Claude's Read tool must not see the token.
     rules += [f"Edit(/{cache}/**)", f"Read(/{cache}/**)", f"Read(/{home}/.claude/projects/**/tool-results/**)"]
     return list(dict.fromkeys(rules))
@@ -96,8 +99,10 @@ def writer_deny_rules(host: str, home: Path) -> list[str]:
     tail.append(f"Bash(curl *{host}/*..*)")
     # The token header, settings and rules live outside Claude's working directory (the cache dir). These make the
     # refusal explicit for Read (which Claude Code also applies to Grep and Glob) and Edit, and for the usual file
-    # readers in Bash. No Bash(*worker-header*) rule: the allowed curl commands name that file.
-    files = [f"Read(/{home}/.config/**)", f"Edit(/{home}/.config/**)", f"Read(/{home}/settings.json)",
+    # readers in Bash. No Bash(*worker-header*) rule: the allowed curl commands name that file. No Read(.config/**)
+    # rule either: verified against the real CLI, Claude Code applies Read denies to the `-H @file` argument of an
+    # allowed curl command, which blocked every legitimate call. The working directory is what keeps Read out of .config.
+    files = [f"Edit(/{home}/.config/**)", f"Read(/{home}/settings.json)",
              f"Edit(/{home}/settings.json)", f"Edit(/{home}/prompts/**)"]
     readers = [r for c in ("cat", "head", "tail", "less", "more", "strings", "od", "xxd", "hexdump", "base64", "grep", "egrep",
                            "rg", "sed", "awk", "cut", "sort", "uniq", "tr", "wc", "stat", "file", "find", "ls", "tee", "cp",

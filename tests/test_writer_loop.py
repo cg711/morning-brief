@@ -125,7 +125,7 @@ def test_child_env_is_minimal_and_has_no_token_at_all(cfg, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-should-not-pass")
     env = loop.child_env(cfg)
     assert set(env) == {"PATH", "HOME", "DISABLE_AUTOUPDATER", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"}
-    assert env["DISABLE_AUTOUPDATER"] == "1" and env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
+    assert env["DISABLE_AUTOUPDATER"] == "1" and env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "0"
     assert env["HOME"] == cfg.home
     assert WORKER_TOKEN not in env.values() and OAUTH_TOKEN not in env.values()
     with_fd = loop.child_env(cfg, token_fd=7)   # the number of the inherited pipe that holds the token
@@ -606,7 +606,7 @@ def test_the_token_reaches_the_child_only_through_the_inherited_pipe(tmp_path, c
     child_env_text = (out / "env").read_text()
     assert OAUTH_TOKEN not in child_env_text and WORKER_TOKEN not in child_env_text
     assert "CLAUDE_CODE_OAUTH_TOKEN=" not in child_env_text
-    assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1" in child_env_text
+    assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0" in child_env_text
     fd_lines = [l for l in child_env_text.splitlines() if l.startswith("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=")]
     assert len(fd_lines) == 1 and fd_lines[0].split("=", 1)[1].isdigit()
     assert OAUTH_TOKEN not in (out / "argv").read_text()
@@ -782,3 +782,11 @@ open(os.path.join({str(out)!r}, 'rc'), 'w').write(json.dumps([r[0], r[3]]))
     assert (out / "token").read_text() == OAUTH_TOKEN
     fd_line = [l for l in (out / "env").read_text().splitlines() if l.startswith("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=")][0]
     assert int(fd_line.split("=", 1)[1]) >= 3
+
+
+def test_classify_prefers_the_error_line_over_the_stack_trace_tail():
+    stderr = ("error: bubblewrap is required for subprocess env scrubbing\n      at FAn (/$bunfs/root/chunk.js:11:6211)\n"
+              "      at A (/$bunfs/root/chunk2.js:11:3518)\n\nBun v1.4.1 (Linux x64)\n")
+    outcome, detail = loop.classify(1, "", stderr, False)
+    assert outcome == "failed" and detail.startswith("error: bubblewrap is required")
+    assert "bunfs" not in detail
