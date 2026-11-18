@@ -40,12 +40,12 @@ curl -s -o {{CACHE_DIR}}/claim.json -w '%{http_code}' --connect-timeout 10 --max
 - Use only facts you read on those pages. When sources disagree, say so.
 - Use at most about 25 web searches and page reads in total; stop researching and write once you have enough.
 
-If you can't produce a responsible episode (the topic is too vague, harmful, or has no reliable sources), report it and stop: write `{"reason": "<one sentence>"}` as JSON to `{{CACHE_DIR}}/fail-<id>.json` (use your file-writing tool so quotes and apostrophes are escaped correctly), then send it with:
+If you can't produce a responsible episode (the topic is too vague, harmful, or has no reliable sources), report it and stop: write `{"reason": "<one sentence>"}` as JSON to `{{CACHE_DIR}}/fail-dd.json` (use your file-writing tool so quotes and apostrophes are escaped correctly), then send it with:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 60 -X POST -H 'Content-Type: application/json' \
   -H @{{HEADER_FILE}} \
-  --data-binary @{{CACHE_DIR}}/fail-<id>.json {{SERVER_URL}}/api/deep-dives/<id>/fail
+  --data-binary @{{CACHE_DIR}}/fail-dd.json {{SERVER_URL}}/api/deep-dives/<id>/fail
 ```
 
 - `204`: stop.
@@ -74,7 +74,7 @@ Write a script for one host to read aloud: about 20 minutes, **2,300–2,800 wor
 
 **Always** add up to 3 suggestions for future deep dives, taken from related topics the research turned up. They should be specific and distinct from this episode: `"suggestions": [{"topic": "…", "reason": "one sentence on why it's worth an episode"}]`.
 
-Save it as JSON to `{{CACHE_DIR}}/script-<id>.json` in exactly this shape:
+Save it as JSON to `{{CACHE_DIR}}/script-dd.json` in exactly this shape:
 
 ```json
 {
@@ -102,14 +102,14 @@ Rules the server enforces:
 - when `fact_check` was requested, the `fact_check` object is required;
 - invalid suggestions are silently dropped, so they never cause a rejection.
 
-Before submitting, count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-<id>.json')); print(sum(len(t.split()) for t in [s['intro'], *[x.get('text') or ' '.join(l['text'] for l in x.get('lines', [])) for x in s['sections']], s['outro']]))"`.
+Before submitting, count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-dd.json')); print(sum(len(t.split()) for t in [s['intro']] + [x.get('text') or ' '.join(l['text'] for l in x.get('lines', [])) for x in s['sections']] + [s['outro']]))"`.
 
 ## 4. Submit
 
 ```bash
 curl -s -o {{CACHE_DIR}}/submit.json -w '%{http_code}' --connect-timeout 10 --max-time 60 -X POST -H 'Content-Type: application/json' \
   -H @{{HEADER_FILE}} \
-  --data-binary @{{CACHE_DIR}}/script-<id>.json {{SERVER_URL}}/api/deep-dives/<id>/script
+  --data-binary @{{CACHE_DIR}}/script-dd.json {{SERVER_URL}}/api/deep-dives/<id>/script
 ```
 
 - `202`: done. Reply `Submitted deep dive <id>: <title> (<N> words, <M> sources).` and stop.

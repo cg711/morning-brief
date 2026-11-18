@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import db, deepdives, podcast, shares
+from . import db, deepdives, podcast, shares, writer_status
 from .config import TZ
 
 log = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ PKG = Path(__file__).resolve().parent
 DEEP_COVER = PKG / "static" / "deep-dives-cover.png"
 
 
-def make_router(*, settings, conn, templates, clock, start_render, check_token, check_hx_request) -> APIRouter:
+def make_router(*, settings, conn, templates, clock, start_render, check_token, check_hx_request,
+                notifier) -> APIRouter:
     router = APIRouter()
 
     def check_worker(request: Request) -> None:
@@ -34,6 +35,39 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
             db.set_state(conn, "worker_last_seen", clock().isoformat())
         except Exception as exc:
             log.warning("could not stamp worker_last_seen: %s", type(exc).__name__)
+
+    @router.get("/api/work")
+    def work(request: Request):
+        check_worker(request)
+        try:
+            db.set_state(conn, writer_status.LAST_POLL, clock().isoformat())
+        except Exception as exc:
+            log.warning("could not stamp writer_last_poll: %s", type(exc).__name__)
+        return writer_status.work(conn, clock())
+
+    @router.post("/api/writer/report", status_code=204)
+    async def writer_report(request: Request):
+        check_worker(request)
+        limit = writer_status.REPORT_MAX_BYTES
+        try:
+            declared = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            declared = 0
+        if declared > limit:
+            return Response(status_code=413)
+        body = b""
+        async for chunk in request.stream():
+            body += chunk
+            if len(body) > limit:
+                return Response(status_code=413)
+        try:
+            parsed = writer_status.parse_report(json.loads(body))
+        except (ValueError, RecursionError):
+            return JSONResponse({"problems": ["the body must be valid JSON"]}, status_code=422)
+        if isinstance(parsed, list):
+            return JSONResponse({"problems": parsed}, status_code=422)
+        writer_status.apply_report(conn, settings, parsed, clock(), notifier)
+        return Response(status_code=204)
 
     @router.post("/api/deep-dives/claim")
     def claim(request: Request):
@@ -173,7 +207,7 @@ def make_router(*, settings, conn, templates, clock, start_render, check_token, 
     def worker_view() -> dict | None:
         if not settings.worker_token:
             return None
-        return deepdives.worker_status(db.get_state(conn, "worker_last_seen"), clock())
+        return writer_status.status_line(conn, clock())
 
     def section_view(error: str | None = None) -> dict:
         rows = deepdives.list_topics(conn)

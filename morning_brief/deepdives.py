@@ -18,6 +18,8 @@ from . import db
 MAX_ACTIVE = 3
 ACTIVE = ("researching", "speaking", "ready")
 CLAIM_TTL = timedelta(hours=3)
+MAX_CLAIM_ATTEMPTS = 3   # counted releases of a dead writer run before the item fails for good
+GAVE_UP = "the writer couldn't finish this"
 AUTO_HEARD_AFTER = timedelta(days=7)
 KEEP_HEARD_FOR = timedelta(days=30)
 STRAY_TMP_AGE = timedelta(days=1)
@@ -269,6 +271,45 @@ def release_expired_claims(conn, now: datetime) -> int:
         ).rowcount
 
 
+def claimable_count(conn, now: datetime) -> int:
+    """How many topics claim() would hand out right now, one after another. Read-only: expired claims count as
+    queued again (as release_expired_claims would make them) and the MAX_ACTIVE cap applies afterwards."""
+    marks = ",".join("?" * len(ACTIVE))
+    row = conn.execute(
+        "SELECT COALESCE(SUM(status = 'queued'), 0) AS queued, "
+        f"COALESCE(SUM(status IN ({marks})), 0) AS active, "
+        "COALESCE(SUM(status = 'researching' AND claimed_at < ?), 0) AS expired FROM topics",
+        (*ACTIVE, _iso(now - CLAIM_TTL))).fetchone()
+    room = MAX_ACTIVE - (row["active"] - row["expired"])
+    return max(0, min(row["queued"] + row["expired"], room))
+
+
+def release_run(conn, started_at: datetime, now: datetime, *, count_attempt: bool) -> dict:
+    """A writer run that began at started_at is over without finishing. Put back the topic it claimed: the EARLIEST
+    researching topic claimed at or after started_at (each prompt claims exactly one), so a claim someone else made
+    later, during the rollout overlap with the Mac, is left alone. Queued again, same position, slot freed.
+    With count_attempt the release is an attempt; the MAX_CLAIM_ATTEMPTS-th fails the topic for good.
+    A claim made before started_at belongs to someone else (the Mac) and is left alone."""
+    released, failed = [], []
+    with _write_lock:
+        rows = conn.execute("SELECT id, claimed_at, claim_attempts FROM topics "
+                            "WHERE status = 'researching' AND claimed_at IS NOT NULL ORDER BY id").fetchall()
+        # compare instants, not text: the stored offset or fractional seconds may differ from started_at's
+        mine = [(datetime.fromisoformat(r["claimed_at"]), r["id"], r) for r in rows
+                if datetime.fromisoformat(r["claimed_at"]) >= started_at]
+        for _, _, row in sorted(mine, key=lambda m: (m[0], m[1]))[:1]:
+            attempts = row["claim_attempts"] + (1 if count_attempt else 0)
+            if attempts >= MAX_CLAIM_ATTEMPTS:
+                conn.execute("UPDATE topics SET status = 'failed', error = ?, claimed_at = NULL, claim_attempts = ?, "
+                             "updated_at = ? WHERE id = ?", (GAVE_UP, attempts, _iso(now), row["id"]))
+                failed.append(row["id"])
+            else:
+                conn.execute("UPDATE topics SET status = 'queued', claimed_at = NULL, claim_attempts = ?, "
+                             "updated_at = ? WHERE id = ?", (attempts, _iso(now), row["id"]))
+                released.append(row["id"])
+    return {"released": released, "failed": failed}
+
+
 def claim(conn, now: datetime):
     """Hand the top queued topic to the worker if fewer than MAX_ACTIVE are researching/speaking/ready."""
     with _write_lock:
@@ -335,7 +376,7 @@ def retry(conn, topic_id: int, now: datetime) -> str | None:
             return None
         status = "speaking" if row["script_json"] else "queued"
         conn.execute(
-            "UPDATE topics SET status = ?, error = NULL, render_attempts = 0, long_notified = NULL, "
+            "UPDATE topics SET status = ?, error = NULL, render_attempts = 0, claim_attempts = 0, long_notified = NULL, "
             "updated_at = ? WHERE id = ?",
             (status, _iso(now), topic_id))
         return status
@@ -393,9 +434,9 @@ def sources_for(conn, topic_id: int) -> list:
 
 
 def worker_status(last_seen: str | None, now: datetime) -> dict:
-    """The 'Mac last checked in …' line. Stale (amber) once the hourly worker has been silent over 2 hours."""
+    """The 'Worker last checked in …' line (the fallback until the server writer has polled). Stale (amber) once the hourly worker has been silent over 2 hours."""
     if last_seen is None:
-        return {"text": "Mac worker hasn't checked in yet", "stale": True}
+        return {"text": "Worker hasn't checked in yet", "stale": True}
     age = now - datetime.fromisoformat(last_seen)
     minutes = max(0, int(age.total_seconds() // 60))
     if minutes < 1:
@@ -406,7 +447,7 @@ def worker_status(last_seen: str | None, now: datetime) -> dict:
         ago = f"{int(minutes / 60 + 0.5)} h ago"
     else:
         ago = f"{minutes // (24 * 60)} days ago"
-    return {"text": f"Mac last checked in {ago}", "stale": age > WORKER_STALE}
+    return {"text": f"Worker last checked in {ago}", "stale": age > WORKER_STALE}
 
 
 def stage_minutes(row, now: datetime) -> int:

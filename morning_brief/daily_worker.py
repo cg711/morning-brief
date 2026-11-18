@@ -16,12 +16,13 @@ import httpx
 
 from . import articles, db, events, feeds, notes, personal, pipeline, retention, speech, window, writer
 from .config import TZ, Settings
-from .deepdives import _has_control_chars
+from .deepdives import GAVE_UP, _has_control_chars
 from .models import SEGMENTS
 
 log = logging.getLogger(__name__)
 MODEL = "mac-worker"
 CLAIM_TTL = timedelta(minutes=15)
+MAX_CLAIM_ATTEMPTS = 3   # counted releases of a dead writer run before the brief fails for good
 # A brief marked missed at READY_BY can still be finished by a late worker (a sleeping Mac) for this long.
 LATE_GRACE = timedelta(hours=3)
 TARGET_WORDS = 550
@@ -186,6 +187,46 @@ def can_submit(job, now: datetime) -> bool:
     return job is not None and (job["status"] == "claimed" or _reopenable(job, now))
 
 
+def _claimable(job, now: datetime) -> bool:
+    """Whether claim() would hand this job out: waiting, claimed longer ago than CLAIM_TTL, or reopenable."""
+    if job is None:
+        return False
+    stale = (job["status"] == "claimed" and job["claimed_at"] is not None
+             and datetime.fromisoformat(job["claimed_at"]) < now - CLAIM_TTL)
+    return job["status"] == "waiting" or stale or _reopenable(job, now)
+
+
+def work_available(conn, now: datetime) -> bool:
+    """Read-only peek: would claim() hand today's job out right now?"""
+    return _claimable(get_job(conn, _local_date(now)), now)
+
+
+def release_run(conn, started_at: datetime, now: datetime, *, count_attempt: bool) -> str | None:
+    """A writer run that began at started_at is over without finishing. The job it claimed (the EARLIEST one claimed at
+    or after started_at; a run claims exactly one) goes back to waiting so the next poll can retry it. With
+    count_attempt the release is an attempt; the MAX_CLAIM_ATTEMPTS-th fails the job for good, and its run. A claim
+    made before started_at belongs to someone else (the Mac) and is left alone. Returns 'released', 'failed' or None."""
+    outcome = None
+    with _lock:
+        # compare instants, not text: the stored offset or fractional seconds may differ from started_at's
+        mine = sorted(((datetime.fromisoformat(j["claimed_at"]), j["date"], j) for j in conn.execute(
+            "SELECT * FROM daily_jobs WHERE status = 'claimed' AND claimed_at IS NOT NULL").fetchall()
+            if datetime.fromisoformat(j["claimed_at"]) >= started_at), key=lambda m: (m[0], m[1]))
+        for _, _, job in mine[:1]:
+            attempts = job["attempts"] + (1 if count_attempt else 0)
+            if attempts >= MAX_CLAIM_ATTEMPTS:
+                conn.execute("UPDATE daily_jobs SET status = 'failed', error = ?, claimed_at = NULL, attempts = ?, "
+                             "updated_at = ? WHERE date = ?", (GAVE_UP, attempts, now.isoformat(), job["date"]))
+                db.finish_run(conn, job["run_id"], "failed", now.isoformat(), error=GAVE_UP)
+                outcome = "failed"
+            else:
+                conn.execute("UPDATE daily_jobs SET status = 'waiting', claimed_at = NULL, attempts = ?, "
+                             "updated_at = ? WHERE date = ?", (attempts, now.isoformat(), job["date"]))
+                db.set_stage(conn, job["run_id"], "waiting")
+                outcome = "released"
+    return outcome
+
+
 def claim(conn, now: datetime, location: str, events_block: dict | None = None) -> dict | None:
     """Hand today's job to the worker if it is waiting, or claimed more than CLAIM_TTL ago."""
     episode_date = _local_date(now)
@@ -193,10 +234,8 @@ def claim(conn, now: datetime, location: str, events_block: dict | None = None) 
         job = get_job(conn, episode_date)
         if job is None:
             return None
-        stale = (job["status"] == "claimed" and job["claimed_at"] is not None
-                 and datetime.fromisoformat(job["claimed_at"]) < now - CLAIM_TTL)
         revive = _reopenable(job, now)
-        if job["status"] != "waiting" and not stale and not revive:
+        if not _claimable(job, now):
             return None
         cur = conn.execute(
             "UPDATE daily_jobs SET status = 'claimed', claimed_at = ?, updated_at = ? "
@@ -476,7 +515,7 @@ def check_missed(settings: Settings, conn, now: datetime, notify) -> bool:
                 db.finish_run(conn, job["run_id"], "failed", now.isoformat(), error="missed")
         db.set_state(conn, "daily_missed_date", episode_date)
     if job is not None:
-        message = f"Couldn't make it: {reason}" if reason else "The Mac worker didn't run."
+        message = f"Couldn't make it: {reason}" if reason else "The writer didn't run."
     else:
         message = f"Couldn't gather stories: {reason}" if reason else "No stories were gathered."
     try:
@@ -497,4 +536,37 @@ def fail_interrupted(conn, now: datetime) -> int:
     for row in conn.execute("SELECT date FROM daily_jobs WHERE status IN ('waiting', 'claimed') AND date < ?",
                             (_local_date(now),)).fetchall():
         count += fail_job(conn, row["date"], "missed", now, from_status=("waiting", "claimed"))
+    return count
+
+
+NEVER_FINISHED = "the writer never finished"
+
+
+def sweep_stuck(settings: Settings, conn, now: datetime) -> int:
+    """Mark daily jobs that can never finish as missed, and finish their runs as failed. A job dated before
+    today that is still waiting or claimed is swept. Today's claimed job is swept once local time is past
+    ready_by + LATE_GRACE and its claim is older than CLAIM_TTL. The error keeps _reopenable from reviving it.
+    Returns the number of jobs swept."""
+    today = _local_date(now)
+    local = now.astimezone(TZ)
+    deadline = datetime.combine(local.date(), settings.ready_by, tzinfo=TZ) + LATE_GRACE
+    past_grace = local >= deadline
+    count = 0
+    with _lock:
+        for job in conn.execute("SELECT * FROM daily_jobs WHERE status IN ('waiting', 'claimed') AND date <= ? "
+                                "ORDER BY date", (today,)).fetchall():
+            if job["date"] == today:
+                if not (past_grace and job["status"] == "claimed" and job["claimed_at"] is not None
+                        and datetime.fromisoformat(job["claimed_at"]) < now - CLAIM_TTL):
+                    continue
+            cur = conn.execute(
+                "UPDATE daily_jobs SET status = 'missed', error = ?, updated_at = ? "
+                "WHERE date = ? AND status IN ('waiting', 'claimed')",
+                (NEVER_FINISHED, now.isoformat(), job["date"]))
+            if cur.rowcount == 0:
+                continue
+            run = conn.execute("SELECT status FROM runs WHERE id = ?", (job["run_id"],)).fetchone()
+            if run is not None and run["status"] == "running":
+                db.finish_run(conn, job["run_id"], "failed", now.isoformat(), error=NEVER_FINISHED)
+            count += 1
     return count

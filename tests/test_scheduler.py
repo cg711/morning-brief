@@ -279,3 +279,34 @@ def test_a_failing_incoming_sweep_does_not_abort_the_prune_job(conn, settings, m
         scheduler.prune_job(conn, settings, lambda: NOW)
     assert calls == ["morning_brief.house", "morning_brief.events"]
     assert "house uploads sweep failed" in caplog.text
+
+
+def test_prune_job_runs_the_stuck_job_sweep(conn, settings):
+    from datetime import timedelta
+
+    from morning_brief import daily_worker
+    from tests.test_daily_worker import gathered
+
+    date = gathered(conn, settings, NOW - timedelta(days=6))
+    daily_worker.claim(conn, NOW - timedelta(days=6), "Minneapolis")
+    scheduler.prune_job(conn, settings, lambda: NOW)
+    job = daily_worker.get_job(conn, date)
+    assert (job["status"], job["error"]) == ("missed", "the writer never finished")
+
+
+def test_a_failing_stuck_job_sweep_does_not_abort_the_prune_job(conn, settings, monkeypatch, caplog):
+    from morning_brief import daily_worker, events, house
+
+    calls = []
+    for module in (house, events):
+        original = module.prune
+        monkeypatch.setattr(module, "prune", lambda *a, _o=original, _n=module.__name__, **k: calls.append(_n) or _o(*a, **k))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(daily_worker, "sweep_stuck", boom)
+    with caplog.at_level("ERROR"):
+        scheduler.prune_job(conn, settings, lambda: NOW)
+    assert calls == ["morning_brief.house", "morning_brief.events"]
+    assert "stuck daily job sweep failed" in caplog.text

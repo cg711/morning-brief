@@ -40,7 +40,7 @@
   {% for t in dd.in_progress %}
     <div class="card">
       <p class="status"><span class="spinner" aria-hidden="true"></span>
-        {% if t.status == "researching" %}Researching on your Mac{% else %}Speaking on the server{% endif %}
+        {% if t.status == "researching" %}Researching{% else %}Speaking on the server{% endif %}
         · {{ t.topic }} · {{ t.minutes }} min{% if t.long %} · <span class="caution">running long</span>{% endif %}</p>
       {% if t.parent_title %}<p class="muted small">Follow-up to {{ t.parent_title }}</p>{% endif %}
       {% include "partials/topic_meta.html" %}
@@ -112,8 +112,8 @@
   {% endif %}
 
   {% if dd.empty %}
-    <p class="muted">No topics yet. Add one above; your Mac researches up to three ahead while the Claude app is open.</p>
+    <p class="muted">No topics yet. Add one above; up to three are researched ahead.</p>
   {% else %}
-    <p class="muted small">Up to three episodes are prepared ahead. Research runs on your Mac while the Claude app is open.</p>
+    <p class="muted small">Up to three episodes are prepared ahead. The writer researches them in the background.</p>
   {% endif %}
 </section>

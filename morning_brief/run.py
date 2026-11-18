@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         if daily_worker.gather_run(settings, "cli") is None:
             print("Nothing gathered; see the logs.")
             return 1
-        print("Gathered today's stories; the Mac worker writes the brief.")
+        print("Gathered today's stories; the writer takes it from here.")
         return 0
 
     deps = pipeline.default_deps(settings)

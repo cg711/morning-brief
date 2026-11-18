@@ -90,7 +90,7 @@ The news (everything except the personal and notes segments) is 450 to 650 words
 - The intro greets the listener with `today`. The outro is one short sign-off line.
 - Order the news segments: headlines, tech, business, local (after the personal and notes segments, if any).
 
-Save it as JSON to `{{CACHE_DIR}}/script-daily-<date>.json` in exactly this shape:
+Save it as JSON to `{{CACHE_DIR}}/script-daily.json` in exactly this shape:
 
 ```json
 {
@@ -105,14 +105,14 @@ Leave out the `"events"` key when the claim's `events` is null.
 
 Rules the server enforces: 300 to 750 words in total; 1 to 8 segments; `segment` is one of headlines, tech, business, local; every segment has a non-empty `headline` (headlines at most 200 characters) and `text` and cites at least one candidate id from the claim; no control characters; an optional first "personal" segment (only when the claim had personal data) of 20 to 160 words that cites no ids, and it doesn't count toward the 300 to 750. An optional "notes" segment (only when the claim had notes) comes right after it, or first, is 20 to 400 words, cites no ids, and doesn't count either. Every pick in "events" needs a valid title, a date inside the claim's window and a source_id from the claim; a title already in "mentioned" is refused unless the event is today or tomorrow; there is no events segment to write.
 
-Count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-daily-<date>.json')); print(sum(len(t.split()) for t in [s['intro'], *[x['text'] for x in s['segments']], s['outro']]))"`.
+Count the words with `python3 -c "import json; s=json.load(open('{{CACHE_DIR}}/script-daily.json')); print(sum(len(t.split()) for t in [s['intro']] + [x['text'] for x in s['segments']] + [s['outro']]))"`.
 
 ## 5. Submit
 
 ```bash
 curl -s -o {{CACHE_DIR}}/daily-submit.json -w '%{http_code}' --connect-timeout 10 --max-time 60 -X POST -H 'Content-Type: application/json' \
   -H @{{HEADER_FILE}} \
-  --data-binary @{{CACHE_DIR}}/script-daily-<date>.json {{SERVER_URL}}/api/daily/<date>/script
+  --data-binary @{{CACHE_DIR}}/script-daily.json {{SERVER_URL}}/api/daily/<date>/script
 ```
 
 - `202`: reply `Submitted daily brief <date> (<N> words, <M> stories).` and stop.
