@@ -84,6 +84,76 @@ How it behaves:
 - **Fact-check pass** and **Two hosts** are checkboxes on each topic. The "New topics default to" switches set their starting state. A fact-check costs roughly 30–50% more of your Claude usage per episode. Two-host episodes use `VOICE` for the host and `COHOST_VOICE` (default `af_heart`) for the co-host.
 - **Suggested topics:** each episode proposes up to 3 related topics. Add or dismiss them from the page.
 
+## Server writer (optional)
+
+Instead of a Mac scheduled task, a small container on the server can write the daily brief and the deep dives itself. It runs headless [Claude Code](https://claude.com/claude-code) on your Claude subscription (no API key, no API cost). It checks the app for work once a minute, which costs no usage, and starts Claude only when a job is waiting. It runs in its own Docker network with a read-only filesystem, and it holds only the Claude token and `WORKER_TOKEN`.
+
+One-time setup:
+
+0. **Check the writer's subnet is free.** The writer network uses `172.29.40.0/24`. If another Docker network already has it, the app fails to start (even without the writer profile), so look first: `docker network inspect $(docker network ls -q) | grep Subnet`. To use another subnet, change it in `docker-compose.yml` (the `writer_net` subnet and the `morning-brief` service's `ipv4_address` on it) and in the `SUBNET` and `APP_IP` variables at the top of `writer_service/firewall.sh`.
+1. **Create the token on the Mac.** Run `claude setup-token` in a terminal where you're signed in to Claude, and keep the output for the next step. You type it yourself; never paste it into a chat or a ticket.
+2. **Create `writer.env` on the server**, from `writer.env.example`, with mode 600, and put the token in it:
+
+   ```bash
+   cp writer.env.example writer.env && chmod 600 writer.env
+   $EDITOR writer.env        # CLAUDE_CODE_OAUTH_TOKEN=<the token>
+   ```
+
+   `writer.env` is git-ignored and Docker-ignored. If you deploy by `rsync` from another machine, add `--exclude writer.env` (as well as `--exclude .env` and `--exclude data`): with `--delete`, the file would otherwise be removed on every deploy.
+3. **Start it.** The writer is opt-in, so a plain `docker compose up -d` neither builds nor starts it:
+
+   ```bash
+   docker compose --profile writer up -d --build
+   ```
+
+   The optional `env_file` form in `docker-compose.yml` needs Docker Compose 2.24 or newer (`docker compose version`). `WORKER_TOKEN` must be set in `.env`; without it the writer won't start. After a minute the page shows "Writer: checked in 12 s ago".
+4. **Apply the firewall.** Run it yourself, with sudo (it changes iptables rules, so nothing runs it for you):
+
+   ```bash
+   sudo bash writer_service/firewall.sh
+   ```
+
+   It allows the writer to reach the app and the public internet, and drops everything else private: the server itself, your LAN, other Docker networks and the tailnet (`172.16.0.0/12`, `10.0.0.0/8`, `192.168.0.0/16`, `100.64.0.0/10`). The rules come out again after 5 minutes unless you confirm with `sudo bash writer_service/firewall.sh confirm`, so a mistake can't lock you out. The script allows the host's own DNS resolvers (read from both `/run/systemd/resolve/resolv.conf` and `/etc/resolv.conf`) and prints which; add others with `sudo ALLOW_DNS="192.168.1.1" bash writer_service/firewall.sh`. The rules don't survive a reboot or a `ufw reload`: see "Known limits".
+5. **Check the isolation** (needs no sudo). First make sure the app's default route is not the writer network, since the firewall treats everything from that subnet as the writer: `docker compose exec morning-brief ip route` (or `cat /proc/net/route` if `ip` is missing) should show the default route via your normal Docker network, not `172.29.40.1`. Then, with the optional probes for a stronger check:
+
+   ```bash
+   docker compose --profile writer exec -e HOST_TAILNET_IP=100.x.y.z -e LAN_PROBE=192.168.x.y:80 \
+     writer python3 /opt/writer/writer_service/check_isolation.py
+   ```
+
+   or, without the probes, `docker compose --profile writer exec writer python3 /opt/writer/writer_service/check_isolation.py`. It must show the app, the internet and DNS working and everything private blocked, and exit 0 ("refused" counts as blocked: the host answered, but nothing is listening). `OTHER_CONTAINER_PROBE=host:port` checks another container the same way.
+6. **First test.** Queue one deep dive in the web UI. Watch the "Writer:" line on the page and the episode appear.
+
+What shows up where:
+- The page's status line reads "Writer: checked in 20 s ago · last run OK 7:36 AM". It turns amber after 5 minutes of silence.
+- Pushes (with `NTFY_TOPIC` set) happen once when a problem starts: "Writer needs you to sign in again" (the token expired; make a new one with `claude setup-token`, put it in `writer.env`, then run `docker compose --profile writer up -d writer`: a plain `restart` does not re-read `writer.env`), "Writer hit the usage limit; it will retry on its own" (nothing is lost), "Writer failed 3 times in a row" (the page's status line says why), and "A deep dive failed after 3 tries" or "Today's brief failed after 3 tries" for an item that gave up.
+
+After the first good morning (a brief and a deep dive both written by the server), switch the Mac scheduled tasks off in the Claude desktop app. Keep them, disabled: the worker API they use still works, so you can switch back.
+
+### Known limits
+
+The writer's Claude can browse the web (WebFetch and WebSearch are allowed), so a malicious page could try to steer it. The daily run holds your personal block (weather, calendar, sleep, spending, notes) and fetches arbitrary web pages, so a page could try to make it send those facts to a web address. The Mac flow had the same exposure, and the firewall does not prevent requests to the public internet: it only keeps the writer off your private networks. The protection is layered: it has no other tools, only a strict allow-list of commands, no token in its environment, and the firewall blocks the private ranges. Once the firewall script is applied it cannot reach your LAN, the tailnet, the host or other containers. **Before the firewall script is applied, its outbound traffic is not restricted**, so run it before the first real job. It reaches the app's worker API, which is by design.
+
+The firewall rules do not survive a reboot or a `ufw reload`, but the writer container restarts by itself, so its outbound traffic is unrestricted again until you re-apply them. After any reboot or `ufw reload`, re-run `sudo bash writer_service/firewall.sh`, confirm, and re-run the isolation check. Also re-run the isolation check after any other hardening or `ufw` change on the server. If you want that automatic, a systemd unit like this one does it (an example; nothing here installs it). Put it in `/etc/systemd/system/morning-brief-writer-firewall.service`, change the path, then `sudo systemctl enable --now morning-brief-writer-firewall`:
+
+```ini
+[Unit]
+Description=morning-brief writer firewall
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /path/to/morning-brief/writer_service/firewall.sh
+ExecStart=/bin/bash /path/to/morning-brief/writer_service/firewall.sh confirm
+
+[Install]
+WantedBy=multi-user.target
+```
+
+It does not cover `ufw reload`; run the script by hand after one.
+
 ## Notifications (optional)
 
 The server can push to your phone through [ntfy](https://ntfy.sh) when a deep dive is ready, and when research or speech is running much longer than usual (research over 60 minutes, speech over 40).
@@ -94,7 +164,7 @@ The server can push to your phone through [ntfy](https://ntfy.sh) when a deep di
 
 With the public ntfy.sh server, episode titles and topic names pass through ntfy.sh. To avoid that, run your own ntfy server and set `NTFY_SERVER`.
 
-The web page also shows when the Mac worker last checked in. The line turns amber after 2 hours of silence.
+The web page also shows when the worker last checked in. The line turns amber after 2 hours of silence (5 minutes once the server writer is running).
 
 ## Daily brief (optional)
 

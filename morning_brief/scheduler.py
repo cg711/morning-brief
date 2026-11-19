@@ -78,6 +78,10 @@ def retry_if_missing(conn, clock, start_run) -> bool:
 def prune_job(conn, settings: Settings, clock) -> None:
     now = clock()
     retention.prune(conn, settings.audio_dir, now.astimezone(TZ).date())
+    try:
+        log.info("stuck daily jobs swept: %s", daily_worker.sweep_stuck(settings, conn, now))
+    except Exception:
+        log.exception("stuck daily job sweep failed")
     result = deepdives.housekeeping(conn, settings.deep_dives_dir, now)
     log.info("deep-dive housekeeping: %s", result)
     log.info("notes housekeeping: %s", notes.housekeeping(conn, now.astimezone(TZ).date()))

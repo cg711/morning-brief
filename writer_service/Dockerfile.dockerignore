@@ -1,0 +1,14 @@
+# Used instead of the root .dockerignore when building writer_service/Dockerfile (the app's ignores scripts/).
+.venv
+.git
+data
+docs
+spike
+tests
+.env
+.env*
+writer.env
+.claude
+.superpowers
+**/__pycache__
+writer_service/Dockerfile*

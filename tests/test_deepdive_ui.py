@@ -59,7 +59,7 @@ def test_in_progress_polls(ui):
     deepdives.add_topic(conn, "Alpha", "", NOW)
     deepdives.claim(conn, NOW)
     html = ui.get("/partials/deep-dives").text
-    assert 'hx-trigger="every 10s"' in html and "Researching on your Mac" in html
+    assert 'hx-trigger="every 10s"' in html and "Researching" in html
     assert "?sig=" in html
 
 

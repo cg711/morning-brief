@@ -5,6 +5,7 @@ docs
 spike
 tests
 scripts
-.env
+.env*
 .env.dev
 .claude
+writer.env

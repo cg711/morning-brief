@@ -8,7 +8,7 @@
     <p class="status"><span class="spinner" aria-hidden="true"></span> {{ today.stage_label }}…
       <span class="{% if today.long %}caution{% else %}muted{% endif %}">{{ today.minutes }} min</span></p>
     {% if today.worker and today.stage == "waiting" %}
-      <p class="muted small">Waiting for your Mac: it writes at its next scheduled run, or press Run now on the morning-brief-daily task in the Claude app.</p>
+      <p class="muted small">Waiting for the writer: it checks for work every minute. If you still use the Mac scheduled task, press Run now on morning-brief-daily in the Claude app.</p>
     {% endif %}
   {% endif %}
   {% if today.episode and today.state in ("ready", "generating") %}

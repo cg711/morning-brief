@@ -216,7 +216,7 @@ def test_worker_mode_waiting_and_stage_labels(settings):
                            started_at=(NOW - timedelta(minutes=40)).isoformat())
         db.set_stage(conn, rid, "waiting")
         html = c.get("/partials/today").text
-        assert "Waiting for your Mac" in html and "Run now" in html and "10 min" in html
+        assert "Waiting for the writer" in html and "Run now" in html and "10 min" in html
         assert "caution" not in html
 
 
@@ -258,7 +258,7 @@ def test_missed_state(settings):
         gathered(conn, c.app.state.settings)
         daily_worker.check_missed(c.app.state.settings, conn, NOW, lambda *a: None)
         html = c.get("/partials/today").text
-        assert "No brief today: the Mac worker didn&#39;t run" in html and "Generate now" in html
+        assert "No brief today: the writer didn&#39;t run" in html and "Generate now" in html
 
 
 def test_worker_mode_amber_measures_time_in_the_writing_stage(settings):
@@ -270,7 +270,7 @@ def test_worker_mode_amber_measures_time_in_the_writing_stage(settings):
         gathered(conn, c.app.state.settings, NOW - timedelta(minutes=60))
         daily_worker.claim(conn, NOW - timedelta(minutes=5), "Minneapolis")
         html = c.get("/partials/today").text
-        assert "Your Mac is writing" in html and "60 min" in html and "caution" not in html
+        assert "The writer is writing" in html and "60 min" in html and "caution" not in html
 
 
 def test_worker_mode_card_follows_the_live_job_run(settings):
@@ -283,7 +283,7 @@ def test_worker_mode_card_follows_the_live_job_run(settings):
                            started_at=NOW.isoformat())
         db.finish_run(conn, rid, "failed", NOW.isoformat(), error="today's brief is already being written")
         html = c.get("/partials/today").text
-        assert "Waiting for your Mac" in html and "Generation failed" not in html
+        assert "Waiting for the writer" in html and "Generation failed" not in html
 
 
 def test_worker_mode_missed_without_a_job(settings):
@@ -307,3 +307,21 @@ def test_worker_mode_polls_slowly_while_waiting_or_writing(settings):
         db.set_stage(conn, rid, "speaking")
         html = c.get("/partials/today").text
         assert 'hx-trigger="every 3s"' in html and "every 20s" not in html
+
+
+def test_startup_runs_the_stuck_job_sweep(settings):
+    from datetime import timedelta
+
+    from morning_brief import daily_worker, db
+    from tests.test_daily_worker import gathered
+
+    conn = db.connect(settings.db_path)
+    db.migrate(conn)
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    conn.close()
+    late = NOW + timedelta(hours=4)
+    app = create_app(settings, clock=lambda: late, start_run=lambda t: True, start_scheduler=False)
+    with TestClient(app):
+        job = daily_worker.get_job(app.state.conn, date)
+    assert (job["status"], job["error"]) == ("missed", "the writer never finished")

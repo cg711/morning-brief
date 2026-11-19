@@ -14,8 +14,57 @@ services:
     volumes:
       - ./data:/srv/data
     mem_limit: 3g
+    networks:
+      default:
+      writer_net:
+        ipv4_address: 172.29.40.10
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+  # The server-side writer: headless Claude Code on the subscription. Opt-in: a plain `docker compose up -d` neither
+  # builds nor starts it; run `docker compose --profile writer up -d --build` once writer.env exists (see
+  # writer.env.example). Isolated on writer_net (see writer_service/firewall.sh); its only secrets are the Claude token
+  # in writer.env and WORKER_TOKEN from .env (empty = deep dives and the worker API are off, and the writer won't start).
+  writer:
+    profiles: ["writer"]
+    build:
+      context: .
+      dockerfile: writer_service/Dockerfile
+    restart: unless-stopped
+    user: "1000:1000"
+    env_file:
+      - path: writer.env
+        required: false
+    environment:
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - writer-home:/home/writer
+    mem_limit: 1g
+    pids_limit: 256
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - writer_net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  writer-home:
+
+networks:
+  writer_net:
+    ipam:
+      config:
+        - subnet: 172.29.40.0/24

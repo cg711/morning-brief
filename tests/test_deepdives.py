@@ -303,16 +303,16 @@ def test_validator_never_raises_on_non_list_sections():
 def test_worker_status_text_and_staleness():
     from morning_brief.deepdives import worker_status
     iso = lambda d: (NOW - d).isoformat()
-    assert worker_status(None, NOW) == {"text": "Mac worker hasn't checked in yet", "stale": True}
-    assert worker_status(iso(timedelta(seconds=20)), NOW) == {"text": "Mac last checked in just now", "stale": False}
-    assert worker_status(iso(timedelta(minutes=14)), NOW) == {"text": "Mac last checked in 14 min ago", "stale": False}
-    assert worker_status(iso(timedelta(minutes=89)), NOW)["text"] == "Mac last checked in 89 min ago"
-    assert worker_status(iso(timedelta(minutes=120)), NOW) == {"text": "Mac last checked in 2 h ago", "stale": False}
+    assert worker_status(None, NOW) == {"text": "Worker hasn't checked in yet", "stale": True}
+    assert worker_status(iso(timedelta(seconds=20)), NOW) == {"text": "Worker last checked in just now", "stale": False}
+    assert worker_status(iso(timedelta(minutes=14)), NOW) == {"text": "Worker last checked in 14 min ago", "stale": False}
+    assert worker_status(iso(timedelta(minutes=89)), NOW)["text"] == "Worker last checked in 89 min ago"
+    assert worker_status(iso(timedelta(minutes=120)), NOW) == {"text": "Worker last checked in 2 h ago", "stale": False}
     assert worker_status(iso(timedelta(minutes=121)), NOW)["stale"] is True
     # 150 min is exactly 2.5 h; round() would banker's-round this down to "2 h ago"
-    assert worker_status(iso(timedelta(minutes=150)), NOW) == {"text": "Mac last checked in 3 h ago", "stale": True}
-    assert worker_status(iso(timedelta(hours=47)), NOW)["text"] == "Mac last checked in 47 h ago"
-    assert worker_status(iso(timedelta(hours=72)), NOW)["text"] == "Mac last checked in 3 days ago"
+    assert worker_status(iso(timedelta(minutes=150)), NOW) == {"text": "Worker last checked in 3 h ago", "stale": True}
+    assert worker_status(iso(timedelta(hours=47)), NOW)["text"] == "Worker last checked in 47 h ago"
+    assert worker_status(iso(timedelta(hours=72)), NOW)["text"] == "Worker last checked in 3 days ago"
 
 
 def _researching(conn, at):
@@ -612,3 +612,168 @@ def test_add_and_dismiss_suggestions(conn):
     assert deepdives.dismiss_suggestion(conn, b["id"]) is True
     assert deepdives.dismiss_suggestion(conn, b["id"]) is False
     assert deepdives.list_suggestions(conn) == []
+
+
+# --- releasing a dead writer run's claims -----------------------------------------------------
+
+def claimed_at(conn, topic_id):
+    return deepdives.get_topic(conn, topic_id)["claimed_at"]
+
+
+def attempts(conn, topic_id):
+    return deepdives.get_topic(conn, topic_id)["claim_attempts"]
+
+
+def test_release_run_requeues_a_claim_made_in_the_run_keeping_position(conn):
+    a, b = add(conn, 2)
+    position = deepdives.get_topic(conn, a)["position"]
+    deepdives.claim(conn, NOW)
+    assert deepdives.active_count(conn) == 1
+    out = deepdives.release_run(conn, NOW, NOW + timedelta(minutes=5), count_attempt=False)
+    assert out == {"released": [a], "failed": []}
+    topic = deepdives.get_topic(conn, a)
+    assert (topic["status"], topic["claimed_at"], topic["position"]) == ("queued", None, position)
+    assert deepdives.active_count(conn) == 0
+    assert deepdives.claim(conn, NOW + timedelta(minutes=6))["id"] == a   # still first in line
+
+
+def test_release_run_counts_attempts_only_when_asked(conn):
+    (a,) = add(conn)
+    deepdives.claim(conn, NOW)
+    deepdives.release_run(conn, NOW, NOW, count_attempt=False)
+    assert attempts(conn, a) == 0
+    deepdives.claim(conn, NOW)
+    deepdives.release_run(conn, NOW, NOW, count_attempt=True)
+    assert attempts(conn, a) == 1 and deepdives.get_topic(conn, a)["status"] == "queued"
+
+
+def test_third_counted_release_fails_the_topic_for_good(conn):
+    (a,) = add(conn)
+    assert deepdives.MAX_CLAIM_ATTEMPTS == 3
+    for n in (1, 2):
+        deepdives.claim(conn, NOW)
+        assert deepdives.release_run(conn, NOW, NOW, count_attempt=True) == {"released": [a], "failed": []}
+        assert attempts(conn, a) == n
+    deepdives.claim(conn, NOW)
+    assert deepdives.release_run(conn, NOW, NOW, count_attempt=True) == {"released": [], "failed": [a]}
+    topic = deepdives.get_topic(conn, a)
+    assert (topic["status"], topic["error"], topic["claimed_at"]) == ("failed", deepdives.GAVE_UP, None)
+    assert deepdives.GAVE_UP == "the writer couldn't finish this"
+    assert deepdives.claim(conn, NOW) is None   # nothing loops forever
+
+
+def test_uncounted_releases_never_fail_a_topic(conn):
+    (a,) = add(conn)
+    for _ in range(6):
+        deepdives.claim(conn, NOW)
+        deepdives.release_run(conn, NOW, NOW, count_attempt=False)
+    assert deepdives.get_topic(conn, a)["status"] == "queued" and attempts(conn, a) == 0
+
+
+def test_release_run_leaves_claims_from_before_the_run_alone(conn):
+    (a,) = add(conn)
+    deepdives.claim(conn, NOW)                       # e.g. the Mac claimed it earlier
+    out = deepdives.release_run(conn, NOW + timedelta(seconds=1), NOW + timedelta(minutes=5), count_attempt=True)
+    assert out == {"released": [], "failed": []}
+    topic = deepdives.get_topic(conn, a)
+    assert topic["status"] == "researching" and topic["claim_attempts"] == 0
+    assert topic["claimed_at"] == deepdives._iso(NOW)
+
+
+def test_release_run_matches_a_claim_at_exactly_started_at_but_not_a_second_earlier(conn):
+    a, b = add(conn, 2)
+    deepdives.claim(conn, NOW - timedelta(seconds=1))   # a: one second before the run started
+    deepdives.claim(conn, NOW)                          # b: exactly at started_at
+    out = deepdives.release_run(conn, NOW, NOW + timedelta(minutes=1), count_attempt=False)
+    assert out == {"released": [b], "failed": []}
+    assert deepdives.get_topic(conn, a)["status"] == "researching"
+
+
+def test_release_run_compares_instants_not_strings(conn):
+    from datetime import timezone
+    (a,) = add(conn)
+    deepdives.claim(conn, NOW + timedelta(microseconds=500))   # stored with a fractional part
+    central = timezone(timedelta(hours=-5))
+    # the same instant as NOW, written in another offset: the text sorts differently but is not later
+    out = deepdives.release_run(conn, NOW.astimezone(central), NOW, count_attempt=False)
+    assert out["released"] == [a]
+
+
+def test_release_run_ignores_speaking_ready_and_failed_topics(conn):
+    a, b, c, d = add(conn, 4)
+    for _ in range(3):
+        deepdives.claim(conn, NOW)
+    deepdives.accept_script(conn, a, deep_dive_script(), NOW)
+    deepdives.publish(conn, b, title="t", word_count=1, duration_s=1.0, audio_bytes=1, now=NOW)
+    deepdives.fail(conn, c, "boom", NOW)
+    out = deepdives.release_run(conn, NOW, NOW, count_attempt=True)
+    assert out == {"released": [], "failed": []}
+    assert [deepdives.get_topic(conn, t)["status"] for t in (a, b, c, d)] == ["speaking", "ready", "failed", "queued"]
+    assert all(attempts(conn, t) == 0 for t in (a, b, c, d))
+
+
+def test_release_run_frees_the_slot_for_the_queue(conn):
+    ids = add(conn, 4)
+    for _ in range(3):
+        deepdives.claim(conn, NOW)
+    assert deepdives.claim(conn, NOW) is None
+    for _ in range(3):
+        deepdives.release_run(conn, NOW, NOW, count_attempt=False)    # one claim per call
+    assert deepdives.active_count(conn) == 0
+    assert deepdives.claim(conn, NOW)["id"] == ids[0]
+
+
+def test_release_run_puts_back_only_the_earliest_claim_since_started_at(conn):
+    a, b, c = add(conn, 3)
+    deepdives.claim(conn, NOW + timedelta(seconds=10))   # b-or-a order: a first in line
+    deepdives.claim(conn, NOW + timedelta(seconds=5))    # claimed earlier in time, queued behind
+    deepdives.claim(conn, NOW + timedelta(seconds=20))
+    earliest = deepdives.get_topic(conn, b)
+    assert earliest["claimed_at"] < deepdives.get_topic(conn, a)["claimed_at"]
+    out = deepdives.release_run(conn, NOW, NOW + timedelta(minutes=1), count_attempt=True)
+    assert out == {"released": [b], "failed": []}
+    assert [deepdives.get_topic(conn, t)["status"] for t in (a, b, c)] == ["researching", "queued", "researching"]
+
+
+def test_retry_resets_the_claim_attempts(conn):
+    (a,) = add(conn)
+    for _ in range(3):
+        deepdives.claim(conn, NOW)
+        deepdives.release_run(conn, NOW, NOW, count_attempt=True)
+    assert deepdives.get_topic(conn, a)["status"] == "failed"
+    assert deepdives.retry(conn, a, NOW) == "queued"
+    assert attempts(conn, a) == 0
+
+
+def snapshot(conn):
+    return [tuple(r) for r in conn.execute("SELECT * FROM topics ORDER BY id")]
+
+
+def test_claimable_count_mirrors_claim(conn):
+    assert deepdives.claimable_count(conn, NOW) == 0                     # nothing queued
+    ids = add(conn, 5)
+    before = snapshot(conn)
+    assert deepdives.claimable_count(conn, NOW) == 3                     # five queued, but the cap is three
+    assert snapshot(conn) == before
+    deepdives.claim(conn, NOW)
+    assert deepdives.claimable_count(conn, NOW) == 2                     # a fresh claim uses a slot
+    assert deepdives.claimable_count(conn, NOW + timedelta(hours=2, minutes=59)) == 2
+    for _ in range(2):
+        deepdives.claim(conn, NOW)
+    assert deepdives.claimable_count(conn, NOW) == 0                     # cap full
+    before = snapshot(conn)
+    # all three claims have expired: claim would release them first, then hand out three
+    assert deepdives.claimable_count(conn, NOW + deepdives.CLAIM_TTL + timedelta(minutes=1)) == 3
+    assert snapshot(conn) == before                                      # a peek writes nothing
+    assert deepdives.claim(conn, NOW + deepdives.CLAIM_TTL + timedelta(minutes=1)) is not None
+
+
+def test_claimable_count_with_expired_claims_and_ready_topics_holding_slots(conn):
+    ids = add(conn, 3)
+    deepdives.claim(conn, NOW)
+    deepdives.publish(conn, ids[0], title="t", word_count=1, duration_s=1.0, audio_bytes=1, now=NOW)   # ready: a slot
+    deepdives.claim(conn, NOW)                                            # ids[1] researching
+    later = NOW + deepdives.CLAIM_TTL + timedelta(minutes=1)
+    # active: ready + researching(expired) -> 1 slot used after release; queued: ids[2] + released ids[1]
+    assert deepdives.claimable_count(conn, later) == 2
+    assert deepdives.claimable_count(conn, NOW) == 1                      # ids[2] queued, 2 slots used

@@ -25,7 +25,7 @@ FUNNEL_HEADER = "tailscale-funnel-request"
 PUBLIC_PREFIXES = ("/s/", "/h/")
 FEED_PREFIXES = ("/feed/", "/audio/")
 LONG_MINUTES = 30
-STAGE_LABELS = {"starting": "Starting", "fetching": "Gathering stories", "waiting": "Waiting for your Mac",
+STAGE_LABELS = {"starting": "Starting", "fetching": "Gathering stories", "waiting": "Waiting for the writer",
                 "selecting": "Picking stories", "reading": "Picking stories", "speaking": "Speaking",
                 "publishing": "Publishing"}
 templates = Jinja2Templates(directory=PKG / "templates")
@@ -65,6 +65,8 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
     conn = db.connect(settings.db_path)
     db.migrate(conn)
     daily_worker.fail_interrupted(conn, clock())
+    # Mostly overlaps fail_interrupted above for a past date; the 3 AM prune is where the sweep does real work.
+    daily_worker.sweep_stuck(settings, conn, clock())
     db.fail_interrupted_runs(conn, clock().isoformat())
     start_run = start_run or (lambda trigger: scheduler.start_background_run(settings, trigger))
     start_render = start_render or (lambda topic_id: deepdive_render.start(settings, topic_id, notify=notifier))
@@ -178,7 +180,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
 
     dd_router = deepdive_routes.make_router(
         settings=settings, conn=conn, templates=templates, clock=clock, start_render=start_render,
-        check_token=check_token, check_hx_request=check_hx_request,
+        check_token=check_token, check_hx_request=check_hx_request, notifier=notifier,
     )
     app.include_router(dd_router)
     app.include_router(share_routes.make_router(settings=settings, conn=conn, templates=templates,
@@ -252,7 +254,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
                 past_ready = settings.worker_mode and now.astimezone(TZ).time() > settings.ready_by
                 label = STAGE_LABELS.get(stage, stage)
                 if stage == "writing":
-                    label = "Your Mac is writing" if settings.worker_mode else "Writing"
+                    label = "The writer is writing" if settings.worker_mode else "Writing"
                 view.update(stage=stage, stage_label=label, minutes=minutes,
                             long=(stage != "waiting" and stage_minutes > LONG_MINUTES)
                             or (stage in ("waiting", "writing") and past_ready))
@@ -265,7 +267,7 @@ def create_app(settings: Settings | None = None, *, clock=None, start_run=None, 
                 view["error"] = run["error"]
         elif job is not None and job["status"] == "missed":
             view["state"] = "missed"
-            view["error"] = job["error"] or "the Mac worker didn't run"
+            view["error"] = job["error"] or "the writer didn't run"
         elif settings.worker_mode and job is None and db.get_state(conn, "daily_missed_date") == date:
             view["state"] = "missed"
             view["error"] = "no stories were gathered"

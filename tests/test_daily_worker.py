@@ -6,7 +6,7 @@ from datetime import date as date_cls, timedelta
 import httpx
 import pytest
 
-from morning_brief import daily_worker, db, events, pipeline, speech
+from morning_brief import daily_worker, db, deepdives, events, pipeline, speech
 from morning_brief.feeds import item_id
 from tests.helpers import NOW, seed_episode
 
@@ -232,7 +232,7 @@ def test_check_missed_pushes_once(conn, settings):
     calls, notify = recorder()
     gathered(conn, settings)
     assert daily_worker.check_missed(settings, conn, NOW, notify) is True
-    assert calls == [("No brief today", "The Mac worker didn't run.")]
+    assert calls == [("No brief today", "The writer didn't run.")]
     assert daily_worker.get_job(conn, "2026-09-25")["status"] == "missed"
     assert db.latest_run(conn)["error"] == "missed"
     assert daily_worker.check_missed(settings, conn, NOW, notify) is False and len(calls) == 1
@@ -656,3 +656,201 @@ def test_downstream_consumers_tolerate_the_events_segment():
     assert "Around town\nAround town this week." in text
     assert speech.script_chapters(script, [0.0, 1.0, 2.0, 3.0]) == [
         ("Introduction", 0.0), ("Storm", 1.0), ("Around town", 2.0), ("Wrap-up", 3.0)]
+
+
+# --- releasing a dead writer run's claim ------------------------------------------------------
+
+def job_row(conn, date):
+    return tuple(daily_worker.get_job(conn, date))
+
+
+def test_release_run_returns_a_claimed_job_to_waiting(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    assert daily_worker.release_run(conn, NOW, NOW + timedelta(minutes=2), count_attempt=False) == "released"
+    job = daily_worker.get_job(conn, date)
+    assert (job["status"], job["claimed_at"], job["attempts"]) == ("waiting", None, 0)
+    assert db.latest_run(conn)["stage"] == "waiting" and db.latest_run(conn)["status"] == "running"
+    assert daily_worker.claim(conn, NOW + timedelta(minutes=3), "Minneapolis") is not None   # claimable at once
+
+
+def test_release_run_counts_attempts_and_the_third_fails_the_job(conn, settings):
+    date = gathered(conn, settings)
+    assert daily_worker.MAX_CLAIM_ATTEMPTS == 3
+    for n in (1, 2):
+        daily_worker.claim(conn, NOW, "Minneapolis")
+        assert daily_worker.release_run(conn, NOW, NOW, count_attempt=True) == "released"
+        assert daily_worker.get_job(conn, date)["attempts"] == n
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    done = NOW + timedelta(minutes=10)
+    assert daily_worker.release_run(conn, NOW, done, count_attempt=True) == "failed"
+    job = daily_worker.get_job(conn, date)
+    assert (job["status"], job["error"], job["claimed_at"]) == ("failed", deepdives.GAVE_UP, None)
+    run = db.latest_run(conn)
+    assert (run["status"], run["error"], run["finished_at"]) == ("failed", deepdives.GAVE_UP, done.isoformat())
+    assert daily_worker.claim(conn, done, "Minneapolis") is None
+
+
+def test_uncounted_daily_releases_never_fail_the_job(conn, settings):
+    date = gathered(conn, settings)
+    for _ in range(5):
+        daily_worker.claim(conn, NOW, "Minneapolis")
+        assert daily_worker.release_run(conn, NOW, NOW, count_attempt=False) == "released"
+    assert daily_worker.get_job(conn, date)["status"] == "waiting"
+
+
+def test_daily_release_leaves_a_claim_from_before_the_run_alone(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")            # the Mac's claim
+    before = job_row(conn, date)
+    assert daily_worker.release_run(conn, NOW + timedelta(seconds=1), NOW + timedelta(minutes=5),
+                                    count_attempt=True) is None
+    assert job_row(conn, date) == before and db.latest_run(conn)["stage"] == "writing"
+
+
+def test_daily_release_matches_a_claim_at_exactly_started_at_but_not_a_second_earlier(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    assert daily_worker.release_run(conn, NOW + timedelta(seconds=1), NOW, count_attempt=False) is None
+    assert daily_worker.get_job(conn, date)["status"] == "claimed"
+    assert daily_worker.release_run(conn, NOW, NOW, count_attempt=False) == "released"
+
+
+def test_daily_release_puts_back_only_the_earliest_claim_since_started_at(conn, settings):
+    first = gathered(conn, settings, NOW - timedelta(days=1))
+    second = gathered(conn, settings)
+    conn.execute("UPDATE daily_jobs SET status = 'claimed', claimed_at = ? WHERE date = ?",
+                 ((NOW + timedelta(seconds=40)).isoformat(), first))
+    conn.execute("UPDATE daily_jobs SET status = 'claimed', claimed_at = ? WHERE date = ?",
+                 ((NOW + timedelta(seconds=5)).isoformat(), second))
+    assert daily_worker.release_run(conn, NOW, NOW + timedelta(minutes=1), count_attempt=True) == "released"
+    assert daily_worker.get_job(conn, second)["status"] == "waiting"
+    assert daily_worker.get_job(conn, first)["status"] == "claimed"
+
+
+def test_daily_release_compares_instants_not_strings(conn, settings):
+    from datetime import timezone
+    gathered(conn, settings)
+    daily_worker.claim(conn, NOW + timedelta(microseconds=500), "Minneapolis")
+    central = timezone(timedelta(hours=-5))
+    assert daily_worker.release_run(conn, NOW.astimezone(central), NOW, count_attempt=False) == "released"
+
+
+def test_daily_release_with_no_claimed_job_is_none(conn, settings):
+    assert daily_worker.release_run(conn, NOW, NOW, count_attempt=True) is None   # no job at all
+    date = gathered(conn, settings)
+    before = job_row(conn, date)
+    assert daily_worker.release_run(conn, NOW, NOW, count_attempt=True) is None   # waiting, not claimed
+    assert job_row(conn, date) == before
+
+
+def test_daily_release_ignores_speaking_done_and_failed_jobs(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    for status in ("speaking", "done", "failed"):
+        conn.execute("UPDATE daily_jobs SET status = ? WHERE date = ?", (status, date))
+        before = job_row(conn, date)
+        assert daily_worker.release_run(conn, NOW, NOW, count_attempt=True) is None
+        assert job_row(conn, date) == before
+
+
+def test_work_available_for_each_state(conn, settings):
+    assert daily_worker.work_available(conn, NOW) is False                    # no job
+    date = gathered(conn, settings)
+    before = job_row(conn, date)
+    assert daily_worker.work_available(conn, NOW) is True                     # waiting
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    claimed = job_row(conn, date)
+    assert daily_worker.work_available(conn, NOW + timedelta(minutes=14)) is False   # fresh claim
+    assert daily_worker.work_available(conn, NOW + timedelta(minutes=16)) is True    # stale claim
+    assert job_row(conn, date) == claimed
+    # missed only because time ran out, inside the grace period: still workable; after it, not
+    conn.execute("UPDATE daily_jobs SET status = 'missed', claimed_at = NULL, updated_at = ? WHERE date = ?",
+                 (NOW.isoformat(), date))
+    assert daily_worker.work_available(conn, NOW + timedelta(hours=2)) is True
+    assert daily_worker.work_available(conn, NOW + daily_worker.LATE_GRACE + timedelta(minutes=1)) is False
+    conn.execute("UPDATE daily_jobs SET error = 'worker said no' WHERE date = ?", (date,))   # a real failure
+    assert daily_worker.work_available(conn, NOW + timedelta(hours=1)) is False
+    for status in ("speaking", "done", "failed"):
+        conn.execute("UPDATE daily_jobs SET status = ?, error = NULL WHERE date = ?", (status, date))
+        assert daily_worker.work_available(conn, NOW) is False
+    assert before is not None
+
+
+def test_work_available_only_looks_at_todays_job(conn, settings):
+    gathered(conn, settings)
+    assert daily_worker.work_available(conn, NOW + timedelta(days=1)) is False
+
+
+NEVER = "the writer never finished"
+
+
+def _status(conn, date):
+    job = daily_worker.get_job(conn, date)
+    return job["status"], job["error"]
+
+
+def test_sweep_marks_old_claimed_and_waiting_jobs_missed(conn, settings):
+    old_claimed = gathered(conn, settings, NOW - timedelta(days=6))
+    daily_worker.claim(conn, NOW - timedelta(days=6), "Minneapolis")
+    old_waiting = gathered(conn, settings, NOW - timedelta(days=2))
+    assert daily_worker.sweep_stuck(settings, conn, NOW) == 2
+    assert _status(conn, old_claimed) == ("missed", NEVER)
+    assert _status(conn, old_waiting) == ("missed", NEVER)
+    assert daily_worker.sweep_stuck(settings, conn, NOW) == 0  # idempotent
+
+
+def test_sweep_waits_for_the_late_grace_window_today(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    # ready_by is 8:30 local, grace 3 h: 11:00 local is inside the window even though the claim is stale
+    assert daily_worker.sweep_stuck(settings, conn, NOW + timedelta(hours=3)) == 0
+    assert _status(conn, date) == ("claimed", None)
+    # 12:00 local is past it, but a fresh claim is still left alone
+    late = NOW + timedelta(hours=4)
+    daily_worker.claim(conn, late - timedelta(minutes=30), "Minneapolis")
+    daily_worker.claim(conn, late - timedelta(minutes=5), "Minneapolis")
+    assert daily_worker.sweep_stuck(settings, conn, late) == 0
+    assert daily_worker.sweep_stuck(settings, conn, late + timedelta(minutes=11)) == 1
+    assert _status(conn, date) == ("missed", NEVER)
+
+
+def test_sweep_leaves_healthy_jobs_alone(conn, settings):
+    days = {}
+    for n, status in enumerate(("done", "speaking", "failed", "missed"), start=2):
+        date = gathered(conn, settings, NOW - timedelta(days=n))
+        conn.execute("UPDATE daily_jobs SET status = ?, error = ? WHERE date = ?",
+                     (status, "boom" if status in ("failed", "missed") else None, date))
+        days[date] = status
+    today = gathered(conn, settings)  # waiting today: claimable, not stuck
+    assert daily_worker.sweep_stuck(settings, conn, NOW + timedelta(hours=5)) == 0
+    for date, status in days.items():
+        assert daily_worker.get_job(conn, date)["status"] == status
+        assert daily_worker.get_job(conn, date)["error"] != NEVER
+    assert _status(conn, today) == ("waiting", None)
+
+
+def test_sweep_finishes_the_run_failed(conn, settings):
+    date = gathered(conn, settings, NOW - timedelta(days=6))
+    daily_worker.claim(conn, NOW - timedelta(days=6), "Minneapolis")
+    run_id = daily_worker.get_job(conn, date)["run_id"]
+    daily_worker.sweep_stuck(settings, conn, NOW)
+    run = conn.execute("SELECT status, error FROM runs WHERE id = ?", (run_id,)).fetchone()
+    assert (run["status"], run["error"]) == ("failed", NEVER)
+    # a run already finished stays as it was
+    other = gathered(conn, settings, NOW - timedelta(days=3))
+    other_run = daily_worker.get_job(conn, other)["run_id"]
+    db.finish_run(conn, other_run, "failed", NOW.isoformat(), error="earlier")
+    daily_worker.sweep_stuck(settings, conn, NOW)
+    run = conn.execute("SELECT status, error FROM runs WHERE id = ?", (other_run,)).fetchone()
+    assert run["error"] == "earlier"
+    assert _status(conn, other) == ("missed", NEVER)
+
+
+def test_swept_job_is_not_reopened_by_a_late_worker(conn, settings):
+    date = gathered(conn, settings)
+    daily_worker.claim(conn, NOW, "Minneapolis")
+    late = NOW + timedelta(hours=4)
+    daily_worker.sweep_stuck(settings, conn, late)
+    assert daily_worker.claim(conn, late, "Minneapolis") is None
+    assert daily_worker.can_submit(daily_worker.get_job(conn, date), late) is False

@@ -31,7 +31,7 @@ def test_worker_mode_gathers_without_calling_the_api(tmp_path, monkeypatch, caps
 
     assert run.main([]) == 0
     assert seen == ["cli"]
-    assert "Gathered today's stories; the Mac worker writes the brief." in capsys.readouterr().out
+    assert "Gathered today's stories; the writer takes it from here." in capsys.readouterr().out
 
     monkeypatch.setattr(daily_worker, "gather_run", lambda s, trigger: None)
     assert run.main([]) == 1
